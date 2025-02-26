@@ -9,4 +9,4 @@ build:
 	docker compose build
 
 run:
-	docker compose run mocap
+	docker compose up
