@@ -122,7 +122,7 @@ def init_camera(
         Throughput should be limited for multiple cameras but reduces frame rate. Can use 125000000 for maximum
         frame rate or 85000000 when using more cameras with a 10GigE switch.
     """
-
+    print("Initializing cameras........")
     # Initialize each available camera
     c.init()
 
@@ -759,6 +759,7 @@ class FlirRecorder:
                         # video_base_name looks like 'data/t111/20240501/t111_20240501_130531'
                         # we just need to replace the date and time parts of the filename
                         # First get the current date and time
+                        # print("Line 764.........")
                         now = datetime.now()
                         time_str = now.strftime("%Y%m%d_%H%M%S")
 
@@ -775,6 +776,7 @@ class FlirRecorder:
             # get the image raw data
             # for each camera, get the current frame and assign it to
             # the corresponding camera
+            # print("Line 781.............")
             real_time_images = []
 
             frame_metadata = {"real_times": real_time, "local_times": local_time, "base_filename": self.video_base_file}
@@ -790,6 +792,8 @@ class FlirRecorder:
             frame_metadata["frame_rates_binning"] = []
 
             for c in self.cams:
+                # print("Line 797................")
+
                 im_ref = c.get_image()
                 timestamp = im_ref.GetTimeStamp()
 
@@ -800,7 +804,10 @@ class FlirRecorder:
                 serial_msg = []
                 
                 frame_count = -1
+                # print("Line 808......")
+
                 if self.gpio_settings['line3'] == 'SerialOn':
+                    # print("Line 809...............")
                     # We expect only 5 bytes to be sent
                     if c.ChunkSerialDataLength == 5:
                         chunk_serial_data = c.ChunkSerialData
@@ -812,6 +819,7 @@ class FlirRecorder:
                         for i, b in enumerate(split_chunk):
                             frame_count |= (b & 0x7F) << (7 * i)
 
+                # print("Line 820...........")
                 frame_metadata["timestamps"].append(timestamp)
                 frame_metadata["frame_id"].append(frame_id)
                 frame_metadata["frame_id_abs"].append(frame_id_abs)
@@ -824,6 +832,7 @@ class FlirRecorder:
 
                 # get the data array
                 # Using try/except to handle frame tearing
+                # print("Line 834.............")
                 try:
                     im = im_ref.GetNDArray()
                     im_ref.Release()
@@ -837,6 +846,7 @@ class FlirRecorder:
                     tqdm.write("Bad frame")
                     continue
 
+                # print("Line 848..............")
                 if self.video_base_file is not None:
                     # Writing the frame information for the current camera to its queue
                     self.image_queue_dict[c.DeviceSerialNumber].put(
