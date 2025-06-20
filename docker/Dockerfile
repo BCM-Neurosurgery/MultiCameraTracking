@@ -1,92 +1,84 @@
+# syntax=docker/dockerfile:1
 FROM peabody124/posepipe
 
-### Install Spinnaker
+# Allow passing host UID/GID at build time (defaults to 1000)
+ARG HOST_UID=1000
+ARG HOST_GID=1000
 
+# Create a non-root user 'appuser' with matching UID/GID
+RUN groupadd -g ${HOST_GID} appuser \
+ && useradd -m -u ${HOST_UID} -g appuser -s /bin/bash appuser
+
+# Set HOME and npm cache directory under the non-root user
+ENV HOME=/home/appuser \
+    NPM_CONFIG_CACHE=/home/appuser/.npm
+
+### Install Spinnaker
 COPY docker/flir/spinnaker-3.1.0.79-amd64 /spinnaker
 COPY docker/flir/*.whl /spinnaker
 
-
 ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update
-
-RUN apt-get install -y libusb-1.0-0 qtbase5-dev qt5-default qtchooser qt5-qmake qtbase5-dev-tools curl screen
-
-RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections && \
+RUN apt-get update && \
+    apt-get install -y libusb-1.0-0 qtbase5-dev qt5-default qtchooser qt5-qmake qtbase5-dev-tools curl screen && \
+    echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections && \
     echo libgentl libspinnaker/accepted-flir-eula boolean true | debconf-set-selections && \
-    dpkg -i /spinnaker/*.deb
+    dpkg -i /spinnaker/*.deb && \
+    pip3 install /spinnaker/*.whl
 
-RUN pip3 install /spinnaker/*.whl
+### Install Node.js & npm
+RUN apt-get install -y ca-certificates curl gnupg && mkdir -p /etc/apt/keyrings
+RUN curl -fsSL \
+      https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+RUN echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+      | tee /etc/apt/sources.list.d/nodesource.list
+RUN apt-get update && apt-get install -y nodejs
 
-### Install items needed for frontend (Node.js, npm)
+# Prepare npm cache directory and adjust ownership
+RUN mkdir -p ${NPM_CONFIG_CACHE} \
+ && chown -R appuser:appuser ${NPM_CONFIG_CACHE}
 
-RUN apt-get install -y ca-certificates curl gnupg
-RUN mkdir -p /etc/apt/keyrings
-RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-RUN echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
-RUN apt-get update && apt-get install nodejs -y
-
-RUN node -v
-RUN npm -v
-
+### Build React frontend
 WORKDIR /Mocap/react_frontend
-
-COPY react_frontend/package*.json /Mocap/react_frontend/
-
+COPY react_frontend/package*.json ./
 RUN npm install
+COPY react_frontend/ ./
 
-COPY react_frontend /Mocap/react_frontend
-
-### Installing extra things (curl, screen, netstat) (can be removed after image is in stable state)
+### Additional utilities
 RUN apt-get install -y net-tools
 
 ### Install EasyMocap
 WORKDIR /
-RUN git clone https://github.com/peabody124/EasyMocap
-RUN pip install --upgrade pip
-RUN pip install -e /EasyMocap
+RUN git clone https://github.com/peabody124/EasyMocap && \
+    pip install --upgrade pip && \
+    pip install -e /EasyMocap
 
-### Install for biomechanical visualization
-# from https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md#3-install-wheels-for-linux
-RUN pip3 install fvcore iopath torch trimesh pyvista
-RUN pip3 install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu117_pyt201/download.html
+### Biomechanical visualization dependencies
+RUN pip3 install fvcore iopath torch trimesh pyvista && \
+    pip3 install --no-index --no-cache-dir pytorch3d \
+      -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu117_pyt201/download.html
 
-RUN apt-get install -y libtbb-dev
-RUN pip3 install tbb
-RUN pip3 install --upgrade tbb
-RUN pip3 install numba
+RUN apt-get install -y libtbb-dev && pip3 install tbb numba && pip3 install --upgrade tbb
 
-### Install MultiCameraTracking package and dependencies
-
+### MultiCameraTracking
 WORKDIR /Mocap
-COPY requirements.txt .
+COPY requirements.txt ./
 RUN pip3 install -r requirements.txt
-COPY pyproject.toml README.md /Mocap/
-COPY multi_camera /Mocap/multi_camera
-COPY model_data /Mocap/model_data
-RUN pip3 install -e /Mocap/
+COPY pyproject.toml README.md ./
+COPY multi_camera ./multi_camera
+COPY model_data ./model_data
+RUN pip3 install -e .
 
+# Entry scripts
 COPY docker/start_acquisition_gui.sh /Mocap/start_acquisition_gui.sh
 RUN chmod +x /Mocap/start_acquisition_gui.sh
 
+# Ensure data/config dirs exist
 WORKDIR /
-RUN mkdir -p /data
-RUN mkdir -p /configs
+RUN mkdir -p /data /configs
 
-# A hack currently, to have a local .datajoint_config.json replace the default one from posepipe
-COPY datajoint_config.json /root/.datajoint_config.json
+# Use the non-root user from here on
+USER appuser
 
-### Install for biomechanical visualization
-# from https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md#3-install-wheels-for-linux
-RUN pip3 install fvcore iopath torch trimesh pyvista
-RUN pip3 install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu117_pyt201/download.html
-
-# need to use this specific version for now
-COPY docker/nimblephysics-0.8.73-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl /
-RUN pip3 install /nimblephysics-0.8.73-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-#RUN pip3 install nimblephysics
-
-
-# # Run bash script to start front end and back end
 ENTRYPOINT ["/bin/bash"]
 CMD ["/Mocap/start_acquisition_gui.sh"]
