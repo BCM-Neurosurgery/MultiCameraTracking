@@ -1,11 +1,10 @@
-version: '3'
-
 services:
   mocap:
     build:
       context: .
       dockerfile: ./docker/Dockerfile
     image: peabody124/mocap
+    user: "${HOST_UID}:${HOST_GID}"
     tty: true
     stdin_open: true
     environment:

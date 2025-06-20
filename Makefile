@@ -3,10 +3,17 @@
 
 .PHONY: clean build run
 
+# detect your host UID/GID
+HOST_UID := $(shell id -u)
+HOST_GID := $(shell id -g)
+
 DIR := ${CURDIR}
 
 build:
-	docker compose build
+	@echo "Building with HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID)"
+	docker compose build \
+	  --build-arg HOST_UID=$(HOST_UID) \
+	  --build-arg HOST_GID=$(HOST_GID)
 
 run:
-	docker compose run mocap
+	docker compose run --rm mocap
