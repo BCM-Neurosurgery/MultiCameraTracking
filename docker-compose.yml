@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: ./docker/Dockerfile
     image: peabody124/mocap
-    user: "${HOST_UID}:${HOST_GID}"
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     tty: true
     stdin_open: true
     environment:
