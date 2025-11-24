@@ -8,7 +8,7 @@ from websockets.exceptions import ConnectionClosedOK
 from datetime import date
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from typing import List, Dict
+from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 import base64
 import numpy as np
@@ -64,6 +64,7 @@ class Session(BaseModel):
     participant_name: str
     session_date: date
     recording_path: str
+    project_id: Optional[str] = None
 
 
 @dataclass
@@ -113,6 +114,10 @@ manager = ConnectionManager()
 RECORDING_BASE = "data"
 CONFIG_PATH = "/configs/"
 DEFAULT_CONFIG = os.path.join(CONFIG_PATH, "cotton_lab_config_20230620.yaml")
+
+_default_projects = "TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036"
+_project_ids = os.environ.get("PROJECT_IDS", _default_projects)
+PROJECT_IDS = [project.strip() for project in _project_ids.split(",") if project.strip()]
 
 print(CONFIG_PATH)
 config_files = os.listdir(CONFIG_PATH)
@@ -243,6 +248,11 @@ async def get_camera_status() -> List[CameraStatus]:
     return camera_status
 
 
+@api_router.get("/project_ids", response_model=List[str])
+async def get_project_ids() -> List[str]:
+    return PROJECT_IDS
+
+
 @api_router.post("/stop")
 async def stop_recording():
     state: GlobalState = get_global_state()
@@ -251,7 +261,7 @@ async def stop_recording():
 
 
 @api_router.post("/session", response_model=Session)
-async def set_session(subject_id: str) -> Session:
+async def set_session(subject_id: str, project_id: Optional[str] = Query(None)) -> Session:
     """
     Create a new session directory for the participant
 
@@ -262,11 +272,20 @@ async def set_session(subject_id: str) -> Session:
     """
 
     date = datetime.date.today()
-    session_dir = os.path.join(RECORDING_BASE, subject_id, "VIDEO", date.strftime("%Y%m%d"))
+    path_parts = [RECORDING_BASE]
+    if project_id:
+        path_parts.append(project_id)
+    path_parts.extend([subject_id, "VIDEO", date.strftime("%Y%m%d")])
+    session_dir = os.path.join(*path_parts)
     os.makedirs(session_dir, exist_ok=True)
 
     state: GlobalState = get_global_state()
-    state.current_session = Session(participant_name=subject_id, session_date=date, recording_path=session_dir)
+    state.current_session = Session(
+        participant_name=subject_id,
+        session_date=date,
+        recording_path=session_dir,
+        project_id=project_id,
+    )
     print("New session: ", state.current_session)
 
     return state.current_session

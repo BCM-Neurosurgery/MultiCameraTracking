@@ -35,6 +35,13 @@
     <button id="reset_cameras" class="btn btn-primary mb-4" onclick="resetCameras()">Reset Cameras</button>
 
     <div class="form-group">
+        <label for="project_id">Project:</label>
+        <select id="project_id" class="form-control">
+            <!-- project ids will be added dynamically -->
+        </select>
+    </div>
+
+    <div class="form-group">
         <label for="participant_identifier">Participant Identifier:</label>
         <input id="participant_identifier" type="text" class="form-control" />
     </div>
@@ -144,6 +151,7 @@
         const startButton = document.getElementById("start");
         const stopButton = document.getElementById("stop");
         const participantIdentifierInput = document.getElementById("participant_identifier");
+        const projectIdInput = document.getElementById("project_id");
         const sessionDirInput = document.getElementById("session_dir");
         const sessionFilenameInput = document.getElementById("session_filename");
         const newSessionButton = document.getElementById("new_session");
@@ -170,8 +178,14 @@
         }
 
         async function newSession() {
+            const params = new URLSearchParams({
+                subject_id: participantIdentifierInput.value
+            });
+            if (projectIdInput.value) {
+                params.append("project_id", projectIdInput.value);
+            }
 
-            fetch(`${API_ENDPOINT}/new_session?subject_id=${participantIdentifierInput.value}`, {
+            fetch(`${API_ENDPOINT}/session?${params.toString()}`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
@@ -181,8 +195,8 @@
                 .then(data => {
                     console.log(data);
                     // Parse the recording_dir and recording_filename fields and show the results in the UI
-                    const recordingDir = data.recording_dir;
-                    const recordingFilename = data.recording_filename;
+                    const recordingDir = data.recording_path;
+                    const recordingFilename = data.participant_name;
                     sessionDirInput.value = recordingDir;
                     sessionFilenameInput.value = recordingFilename;
                 }
@@ -237,6 +251,30 @@
                     option.text = config;
                     configSelect.add(option);
                 });
+            });
+
+        fetch(`${API_ENDPOINT}/project_ids`)
+            .then(response => response.json())
+            .then(data => {
+                projectIdInput.innerHTML = "";
+                if (!data || data.length === 0) {
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.text = "No project ids configured";
+                    option.disabled = true;
+                    option.selected = true;
+                    projectIdInput.add(option);
+                } else {
+                    data.forEach((project, index) => {
+                        const option = document.createElement("option");
+                        option.value = project;
+                        option.text = project;
+                        if (index === 0) {
+                            option.selected = true;
+                        }
+                        projectIdInput.add(option);
+                    });
+                }
             });
 
         async function configChanged() {

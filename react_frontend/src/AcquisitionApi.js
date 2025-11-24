@@ -12,9 +12,11 @@ const WS_BASE_URL = `ws://${BASE_URL}/ws`;
 
 const initialState = {
     partipant: "",
+    projectId: "",
     recordingDir: "",
     recordingFilename: "",
     availableConfigs: [],
+    projectOptions: [],
 }
 
 export const AcquisitionState = createContext(initialState);
@@ -56,6 +58,8 @@ export const useEffectOnce = (effect) => {
 export const AquisitionApi = (props) => {
 
     const [participant, setParticipant] = useState("");
+    const [projectId, setProjectId] = useState("");
+    const [projectOptions, setProjectOptions] = useState([]);
     const [cameraStatusList, setCameraStatusList] = useState([]);
     const [availableConfigs, setAvailableConfigs] = useState([]);
     const [currentConfig, setCurrentConfig] = useState('');
@@ -126,6 +130,7 @@ export const AquisitionApi = (props) => {
         fetchCurrentConfig();
         fetchRecordingStatus();
         fetchSession();
+        fetchProjectIds();
     }, []);
 
     useEffect(() => {
@@ -141,18 +146,23 @@ export const AquisitionApi = (props) => {
         setParticipant(data.participant_name);
         setRecordingDir(data.recording_path);
         setRecordingFileBase(data.participant_name);
+        if (data.project_id) {
+            setProjectId(data.project_id);
+        }
     }
 
-    async function newSession(participant) {
-        if (participant && participant.length > 0) {
-            console.log("Creating new session for participant: ", participant);
+    async function newSession(participantName, selectedProjectId) {
+        if (participantName && participantName.length > 0) {
+            const projectIdentifier = selectedProjectId != null ? selectedProjectId : projectId;
+            console.log("Creating new session for participant: ", participantName, "project:", projectIdentifier);
             const response = await axios.post(`${API_BASE_URL}/session`, null,
                 {
                     headers: {
                         'Content-Type': 'application/json',
                     }, params:
                     {
-                        subject_id: participant,
+                        subject_id: participantName,
+                        project_id: projectIdentifier,
                     }
                 });
 
@@ -162,6 +172,9 @@ export const AquisitionApi = (props) => {
             setParticipant(data.participant_name);
             setRecordingDir(data.recording_path);
             setRecordingFileBase(data.participant_name);
+            if (data.project_id || projectIdentifier) {
+                setProjectId(data.project_id || projectIdentifier || "");
+            }
         }
     }
 
@@ -228,6 +241,17 @@ export const AquisitionApi = (props) => {
         const response = await axios.get(`${API_BASE_URL}/recording_status`);
         console.log("fetchRecordingStatus: ", response.data);
         setRecordingSystemStatus(response.data);
+    };
+
+    const fetchProjectIds = async () => {
+        try {
+            const response = await axios.get(`${API_BASE_URL}/project_ids`);
+            const ids = response.data;
+            setProjectOptions(ids);
+            setProjectId((current) => current || ids[0] || "");
+        } catch (error) {
+            console.error("Unable to fetch project ids", error);
+        }
     };
 
     const fetchRecordings = async () => {
@@ -440,6 +464,8 @@ export const AquisitionApi = (props) => {
 
     return (<AcquisitionState.Provider value={{
         participant: participant,
+        projectId: projectId,
+        projectOptions: projectOptions,
         recordingDir: recordingDir,
         recordingFileBase: recordingFileBase,
         recordingFilename: recordingFilename,
@@ -472,6 +498,7 @@ export const AquisitionApi = (props) => {
         fetchBiomechanics,
         fetchSmplTrials,
         fetchSmpl,
+        setProjectId,
     }}> {props.children} </AcquisitionState.Provider >)
     //return (<div> {children} </div>)
 };
