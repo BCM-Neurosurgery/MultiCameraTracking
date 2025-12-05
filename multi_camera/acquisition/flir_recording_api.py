@@ -102,6 +102,7 @@ def init_camera(
     resend_enable: bool = False,
     binning: int = 1,
     exposure_time: int = 15000,
+    frame_rate: int = 30,
     gpio_settings: dict = {},
     chunk_data: list = [],
 ):
@@ -144,6 +145,23 @@ def init_camera(
     # low to reduce blur while obtaining sufficient light
     c.ExposureAuto = "Off"
     c.ExposureTime = exposure_time
+
+    # set desired frame rate when supported
+    try:
+        c.AcquisitionFrameRateEnable = True
+    except Exception as e:
+        tqdm.write(f"Could not enable frame rate control on {c.DeviceSerialNumber}: {e}")
+
+    try:
+        if hasattr(c, "AcquisitionFrameRateAuto"):
+            c.AcquisitionFrameRateAuto = "Off"
+    except Exception:
+        pass
+
+    try:
+        c.AcquisitionFrameRate = frame_rate
+    except Exception as e:
+        tqdm.write(f"Could not set frame rate on {c.DeviceSerialNumber}: {e}")
 
     # let the auto gain match the brightness across images as much as possible
     c.GainAuto = "Continuous"
@@ -575,6 +593,7 @@ class FlirRecorder:
             "resend_enable": False,
             "binning": binning,
             "exposure_time": exposure_time,
+            "frame_rate": frame_rate,
             "gpio_settings": self.gpio_settings,
             "chunk_data": self.camera_config["acquisition-settings"]["chunk_data"]
         }
