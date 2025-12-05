@@ -115,7 +115,7 @@ RECORDING_BASE = "data"
 CONFIG_PATH = "/configs/"
 DEFAULT_CONFIG = os.path.join(CONFIG_PATH, "cotton_lab_config_20230620.yaml")
 
-_default_projects = "TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036"
+_default_projects = "TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036,TEST-XXXXX"
 _project_ids = os.environ.get("PROJECT_IDS", _default_projects)
 PROJECT_IDS = [project.strip() for project in _project_ids.split(",") if project.strip()]
 
