@@ -8,6 +8,7 @@ if [ -f $ENV_FILE ]; then
 fi
 
 sudo ip link set ${NETWORK_INTERFACE} mtu 9000
+echo "MTU now: $(cat /sys/class/net/${NETWORK_INTERFACE}/mtu)"
 
 sysctl -w net.core.rmem_max=10000000
 sysctl -w net.core.rmem_default=10000000
