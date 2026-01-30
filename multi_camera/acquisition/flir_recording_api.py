@@ -5,6 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from datetime import datetime
 from queue import Queue
+import queue
 from typing import List, Callable, Awaitable
 from pydantic import BaseModel
 import concurrent.futures
@@ -93,6 +94,16 @@ def select_interface(interface, cameras):
     # If there are no cameras on the interface, return None
     return retval
 
+def safe_put(q, item):
+    """
+    Insert items into the queue without blocking it.
+    If the queue is full, discard it.
+    """
+    try:
+        q.put_nowait(item)
+    except queue.Full:
+        print("queue full, dropping item")
+        pass
 
 def init_camera(
     c: Camera,
@@ -810,6 +821,16 @@ class FlirRecorder:
 
             for c in self.cams:
                 im_ref = c.get_image()
+                # if the image is not complete (packet loss/buffer)
+                # just drop this frame
+                if im_ref.IsIncomplete():
+                    im_stat = im_ref.GetImageStatus()
+                    print(f"{c.DeviceSerialNumber}: Image incomplete | "
+                          f"{PySpin.Image.GetImageStatusDescription(im_stat)}"
+                    )
+                    im_ref.Release()
+                    continue
+
                 timestamp = im_ref.GetTimeStamp()
 
                 chunk_data = im_ref.GetChunkData()
@@ -860,12 +881,18 @@ class FlirRecorder:
 
                 if self.video_base_file is not None:
                     # Writing the frame information for the current camera to its queue
-                    self.image_queue_dict[c.DeviceSerialNumber].put(
-                        {"im": im, "real_times": real_time, "timestamps": timestamp,  "base_filename": self.video_base_file}
+                    safe_put(
+                        self.image_queue_dict[c.DeviceSerialNumber],
+                        {
+                            "im": im,
+                            "real_times": real_time,
+                            "timestamps": timestamp,
+                            "base_filename": self.video_base_file,
+                        },
                     )
             if self.video_base_file is not None:
                 # put the frame metadata into the json queue
-                self.json_queue.put(frame_metadata)
+                safe_put(self.json_queue, frame_metadata)
 
             if self.preview_callback:
                 self.preview_callback(real_time_images)
