@@ -805,7 +805,8 @@ class FlirRecorder:
             # get the image raw data
             # for each camera, get the current frame and assign it to
             # the corresponding camera
-            real_time_images = []
+            preview_this_frame = self.preview_callback is not None and (frame_idx % 10 == 0)
+            real_time_images = [] if preview_this_frame else None
 
             frame_metadata = {"real_times": real_time, "local_times": local_time, "base_filename": self.video_base_file}
 
@@ -870,7 +871,7 @@ class FlirRecorder:
                     im = im_ref.GetNDArray()
                     im_ref.Release()
 
-                    if self.preview_callback is not None:
+                    if preview_this_frame:
                         # if preview is enabled, save the size of the first image
                         # and append the image from each camera to a list
                         real_time_images.append(im)
@@ -894,7 +895,7 @@ class FlirRecorder:
                 # put the frame metadata into the json queue
                 safe_put(self.json_queue, frame_metadata)
 
-            if self.preview_callback:
+            if preview_this_frame:
                 self.preview_callback(real_time_images)
 
             frame_idx += 1
