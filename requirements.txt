@@ -10,7 +10,10 @@ pyyaml
 sqlalchemy
 fastapi[all]
 colorlog
-jax
-jaxlib
+# JAX: the base image uses Python 3.8; recent JAX/JAXLIB releases may not publish cp38 wheels.
+# Adding the official JAX wheel index and pinning to a known Py3.8-compatible pair keeps Docker builds deterministic.
+-f https://storage.googleapis.com/jax-releases/jax_releases.html
+jax==0.4.13
+jaxlib==0.4.13
 jaxopt
 jaxlie
