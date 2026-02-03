@@ -54,9 +54,16 @@ RUN git clone https://github.com/peabody124/EasyMocap && \
     pip install -e /EasyMocap
 
 ### Biomechanical visualization dependencies
-RUN pip3 install fvcore iopath torch trimesh pyvista && \
-    pip3 install --no-index --no-cache-dir pytorch3d \
-      -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu117_pyt201/download.html
+#
+# Pin Torch to match the PyTorch3D wheel below (py38_cu117_pyt201).
+# This avoids pip pulling newer CUDA 12.x Torch deps (e.g., nvidia_cudnn_cu12) during build.
+# RUN pip3 install --no-cache-dir \
+#       --index-url https://download.pytorch.org/whl/cu117 \
+#       --extra-index-url https://pypi.org/simple \
+#       torch==2.0.1+cu117 && \
+#     pip3 install fvcore iopath trimesh pyvista && \
+#     pip3 install --no-index --no-cache-dir pytorch3d \
+#       -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu117_pyt201/download.html
 
 RUN apt-get install -y libtbb-dev && pip3 install tbb numba && pip3 install --upgrade tbb
 
