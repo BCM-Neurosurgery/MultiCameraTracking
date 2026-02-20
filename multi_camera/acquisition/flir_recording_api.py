@@ -186,7 +186,58 @@ def init_camera(
     else:
         c.GevSCPSPacketSize = 1500
 
-    c.DeviceLinkThroughputLimit = throughput_limit
+    sn = str(getattr(c, "DeviceSerialNumber", "UNKNOWN"))
+
+    # --- set FPS with a readable error if it fails ---
+    try:
+        c.AcquisitionFrameRate = frame_rate
+    except Exception as e:
+        # Try to read the max FPS from the GenICam node (optional, but helps)
+        max_fps = None
+        try:
+            cam_ptr = getattr(c, "cam", None) or getattr(c, "_cam", None)
+            if cam_ptr is not None:
+                fps_node = PySpin.CFloatPtr(cam_ptr.GetNodeMap().GetNode("AcquisitionFrameRate"))
+                max_fps = float(fps_node.GetMax())
+        except Exception:
+            pass
+
+        raise RuntimeError(
+            f"[Camera {sn}] Cannot set FPS to {frame_rate}. "
+            f"This usually happens when the camera's Ethernet link is running slow (e.g., negotiated down). "
+            f"{'Max FPS currently ~'+str(round(max_fps,3)) if max_fps is not None else ''}\n"
+            f"Fix: replug the camera's Ethernet cable on the SWITCH side, or move it to another switch port, "
+            f"or swap to a known-good Cat6/Cat6a cable."
+        ) from e
+
+    # --- set throughput with a readable error if it fails ---
+    try:
+        c.DeviceLinkThroughputLimit = throughput_limit
+    except PySpin.SpinnakerException as e:
+        max_tp = None
+        link_guess = None
+        try:
+            cam_ptr = getattr(c, "cam", None) or getattr(c, "_cam", None)
+            if cam_ptr is not None:
+                tp_node = PySpin.CIntegerPtr(cam_ptr.GetNodeMap().GetNode("DeviceLinkThroughputLimit"))
+                max_tp = int(tp_node.GetMax())
+                # Very practical heuristic: 12,500,000 ~= 100 Mbps
+                if max_tp <= 13_000_000:
+                    link_guess = "likely 100 Mbps"
+                elif max_tp <= 140_000_000:
+                    link_guess = "likely 1 Gbps"
+                else:
+                    link_guess = "link speed unknown"
+        except Exception:
+            pass
+
+        raise RuntimeError(
+            f"[Camera {sn}] Camera Ethernet bandwidth is too low ({link_guess or 'unknown'}). "
+            f"Requested throughput={throughput_limit}, camera max={max_tp}.\n"
+            f"Fix: replug the camera's Ethernet cable on the SWITCH side (wait ~5s), "
+            f"then retry. If it repeats, change switch port or swap cable."
+        ) from e
+
     c.GevSCPD = 25000
 
     line0 = gpio_settings['line0']
