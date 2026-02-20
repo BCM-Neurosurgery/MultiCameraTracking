@@ -872,76 +872,83 @@ class FlirRecorder:
             frame_metadata["frame_rates_binning"] = []
 
             for c in self.cams:
-                im_ref = c.get_image()
-                # if the image is not complete (packet loss/buffer)
-                # just drop this frame
-                if im_ref.IsIncomplete():
-                    im_stat = im_ref.GetImageStatus()
-                    print(f"{c.DeviceSerialNumber}: Image incomplete | "
-                          f"{PySpin.Image.GetImageStatusDescription(im_stat)}"
-                    )
-                    im_ref.Release()
-                    continue
-
-                timestamp = im_ref.GetTimeStamp()
-
-                chunk_data = im_ref.GetChunkData()
-                frame_id = im_ref.GetFrameID()
-                frame_id_abs = chunk_data.GetFrameID()
-
-                serial_msg = []
-                
-                frame_count = -1
-                if self.gpio_settings['line3'] == 'SerialOn':
-                    # We expect only 5 bytes to be sent
-                    if c.ChunkSerialDataLength == 5:
-                        chunk_serial_data = c.ChunkSerialData
-                        serial_msg = chunk_serial_data
-                        split_chunk = [ord(c) for c in chunk_serial_data]
-
-                        # Reconstruct the current count from the chunk serial data
-                        frame_count = 0
-                        for i, b in enumerate(split_chunk):
-                            frame_count |= (b & 0x7F) << (7 * i)
-                    else:
-                        print("")
-
-                frame_metadata["timestamps"].append(timestamp)
-                frame_metadata["frame_id"].append(frame_id)
-                frame_metadata["frame_id_abs"].append(frame_id_abs)
-                frame_metadata["chunk_serial_data"].append(frame_count)
-                frame_metadata["serial_msg"].append(serial_msg)
-                frame_metadata["camera_serials"].append(c.DeviceSerialNumber)
-                frame_metadata["exposure_times"].append(c.ExposureTime)
-                frame_metadata["frame_rates_binning"].append(c.BinningHorizontal * 30)
-                frame_metadata["frame_rates_requested"].append(c.AcquisitionFrameRate)
-
-                # get the data array
-                # Using try/except to handle frame tearing
                 try:
-                    im = im_ref.GetNDArray()
-                    im_ref.Release()
-
-                    if preview_this_frame:
-                        # if preview is enabled, save the size of the first image
-                        # and append the image from each camera to a list
-                        real_time_images.append(im)
-
+                    im_ref = c.get_image()
                 except Exception as e:
-                    tqdm.write("Bad frame")
+                    tqdm.write(f"{c.DeviceSerialNumber}: failed to get image ({e})")
                     continue
 
-                if self.video_base_file is not None:
-                    # Writing the frame information for the current camera to its queue
-                    safe_put(
-                        self.image_queue_dict[c.DeviceSerialNumber],
-                        {
-                            "im": im,
-                            "real_times": real_time,
-                            "timestamps": timestamp,
-                            "base_filename": self.video_base_file,
-                        },
-                    )
+                # Always release the image reference, regardless of success/failure path.
+                try:
+                    # if the image is not complete (packet loss/buffer)
+                    # just drop this frame
+                    if im_ref.IsIncomplete():
+                        im_stat = im_ref.GetImageStatus()
+                        print(f"{c.DeviceSerialNumber}: Image incomplete | "
+                              f"{PySpin.Image.GetImageStatusDescription(im_stat)}"
+                        )
+                        continue
+
+                    timestamp = im_ref.GetTimeStamp()
+
+                    chunk_data = im_ref.GetChunkData()
+                    frame_id = im_ref.GetFrameID()
+                    frame_id_abs = chunk_data.GetFrameID()
+
+                    serial_msg = []
+                    
+                    frame_count = -1
+                    if self.gpio_settings['line3'] == 'SerialOn':
+                        # We expect only 5 bytes to be sent
+                        if c.ChunkSerialDataLength == 5:
+                            chunk_serial_data = c.ChunkSerialData
+                            serial_msg = chunk_serial_data
+                            split_chunk = [ord(c) for c in chunk_serial_data]
+
+                            # Reconstruct the current count from the chunk serial data
+                            frame_count = 0
+                            for i, b in enumerate(split_chunk):
+                                frame_count |= (b & 0x7F) << (7 * i)
+                        else:
+                            print("")
+
+                    frame_metadata["timestamps"].append(timestamp)
+                    frame_metadata["frame_id"].append(frame_id)
+                    frame_metadata["frame_id_abs"].append(frame_id_abs)
+                    frame_metadata["chunk_serial_data"].append(frame_count)
+                    frame_metadata["serial_msg"].append(serial_msg)
+                    frame_metadata["camera_serials"].append(c.DeviceSerialNumber)
+                    frame_metadata["exposure_times"].append(c.ExposureTime)
+                    frame_metadata["frame_rates_binning"].append(c.BinningHorizontal * 30)
+                    frame_metadata["frame_rates_requested"].append(c.AcquisitionFrameRate)
+
+                    # get the data array
+                    # Using try/except to handle frame tearing
+                    try:
+                        im = im_ref.GetNDArray()
+
+                        if preview_this_frame:
+                            # if preview is enabled, save the size of the first image
+                            # and append the image from each camera to a list
+                            real_time_images.append(im)
+
+                    except Exception:
+                        tqdm.write("Bad frame")
+                        continue
+
+                    if self.video_base_file is not None:
+                        # Writing the frame information for the current camera to its queue
+                        safe_put(
+                            self.image_queue_dict[c.DeviceSerialNumber],
+                            {
+                                "im": im,
+                                "real_times": real_time,
+                                "timestamps": timestamp,
+                                "base_filename": self.video_base_file,
+                            },
+                        )
+                finally:
+                    im_ref.Release()
             if self.video_base_file is not None:
                 # put the frame metadata into the json queue
                 safe_put(self.json_queue, frame_metadata)
