@@ -440,71 +440,81 @@ def write_metadata_queue(json_queue: Queue, records_queue: Queue, json_file: str
     json_data["chunk_serial_data"] = []
     json_data["serial_msg"] = []
 
-    for frame_num, frame in enumerate(iter(json_queue.get, None)):
-        if frame is None:
-            break
+    last_frame = None
 
-        if current_filename != frame["base_filename"]:
-            
-            # This means a new file should be started
-            json_file = current_filename + ".json"
+    while True:
+        frame = json_queue.get()
+        try:
+            if frame is None:
+                break
 
-            # Get the camera serial IDs
-            json_data["serials"] = frame["camera_serials"]
-            json_data["camera_config_hash"] = config_metadata["camera_config_hash"]
-            json_data["camera_info"] = config_metadata["camera_info"]
-            json_data["meta_info"] = config_metadata["meta_info"]
-            # Get the current camera settings for each camera before writing
-            json_data["exposure_times"] = frame["exposure_times"]
-            json_data["frame_rates_requested"] = frame["frame_rates_requested"]
-            json_data["frame_rates_binning"] = frame["frame_rates_binning"]
+            last_frame = frame
 
+            if current_filename != frame["base_filename"]:
 
-            with open(json_file, "w") as f:
-                json.dump(json_data, f)
-                f.write("\n")
+                # This means a new file should be started
+                json_file = current_filename + ".json"
 
-            max_timespread = calculate_timespread_drift(json_data["timestamps"])
+                # Get the camera serial IDs
+                json_data["serials"] = frame["camera_serials"]
+                json_data["camera_config_hash"] = config_metadata["camera_config_hash"]
+                json_data["camera_info"] = config_metadata["camera_info"]
+                json_data["meta_info"] = config_metadata["meta_info"]
+                # Get the current camera settings for each camera before writing
+                json_data["exposure_times"] = frame["exposure_times"]
+                json_data["frame_rates_requested"] = frame["frame_rates_requested"]
+                json_data["frame_rates_binning"] = frame["frame_rates_binning"]
 
-            # add the current filename, max timespread, first of the local_times to the records queue
-            records_queue.put({"filename": current_filename, "timestamp_spread": max_timespread, "recording_timestamp": local_times[0]})
+                with open(json_file, "w") as f:
+                    json.dump(json_data, f)
+                    f.write("\n")
 
-            current_filename = frame["base_filename"]
+                max_timespread = calculate_timespread_drift(json_data["timestamps"])
 
-            # reset the json_lists
-            json_data = {}
-            json_data["real_times"] = [frame["real_times"]]
-            local_times = [frame["local_times"]]
-            json_data["timestamps"] = [frame["timestamps"]]
-            json_data["frame_id"] = [frame["frame_id"]]
-            json_data["frame_id_abs"] = [frame["frame_id_abs"]]
-            json_data["chunk_serial_data"] = [frame["chunk_serial_data"]]
-            json_data["serial_msg"] = [frame["serial_msg"]]
+                # add the current filename, max timespread, first of the local_times to the records queue
+                records_queue.put(
+                    {"filename": current_filename, "timestamp_spread": max_timespread, "recording_timestamp": local_times[0]}
+                )
 
-        else:
-            # This means we are still writing to the same json file
-            json_data["real_times"].append(frame["real_times"])
-            local_times.append(frame["local_times"])
-            json_data["timestamps"].append(frame["timestamps"])
-            json_data["frame_id"].append(frame["frame_id"])
-            json_data["frame_id_abs"].append(frame["frame_id_abs"])
-            json_data["chunk_serial_data"].append(frame["chunk_serial_data"])
-            json_data["serial_msg"].append(frame["serial_msg"])
+                current_filename = frame["base_filename"]
 
-        json_queue.task_done()
+                # reset the json lists for the new segment
+                json_data = {}
+                json_data["real_times"] = [frame["real_times"]]
+                local_times = [frame["local_times"]]
+                json_data["timestamps"] = [frame["timestamps"]]
+                json_data["frame_id"] = [frame["frame_id"]]
+                json_data["frame_id_abs"] = [frame["frame_id_abs"]]
+                json_data["chunk_serial_data"] = [frame["chunk_serial_data"]]
+                json_data["serial_msg"] = [frame["serial_msg"]]
+
+            else:
+                # This means we are still writing to the same json file
+                json_data["real_times"].append(frame["real_times"])
+                local_times.append(frame["local_times"])
+                json_data["timestamps"].append(frame["timestamps"])
+                json_data["frame_id"].append(frame["frame_id"])
+                json_data["frame_id_abs"].append(frame["frame_id_abs"])
+                json_data["chunk_serial_data"].append(frame["chunk_serial_data"])
+                json_data["serial_msg"].append(frame["serial_msg"])
+        finally:
+            json_queue.task_done()
+
+    if last_frame is None:
+        return
 
     # write the last json file with the remaining data
     json_file = current_filename + ".json"
 
     # Get the information from the config file
-    json_data["serials"] = frame["camera_serials"]
+    json_data["serials"] = last_frame["camera_serials"]
     json_data["camera_config_hash"] = config_metadata["camera_config_hash"]
     json_data["camera_info"] = config_metadata["camera_info"]
     json_data["meta_info"] = config_metadata["meta_info"]
     # Get the current camera settings for each camera before writing
-    json_data["exposure_times"] = frame["exposure_times"]
-    json_data["frame_rates_requested"] = frame["frame_rates_requested"]
-    json_data["frame_rates_binning"] = frame["frame_rates_binning"]
+    json_data["exposure_times"] = last_frame["exposure_times"]
+    json_data["frame_rates_requested"] = last_frame["frame_rates_requested"]
+    json_data["frame_rates_binning"] = last_frame["frame_rates_binning"]
 
     with open(json_file, "w") as f:
         json.dump(json_data, f)
@@ -513,8 +523,6 @@ def write_metadata_queue(json_queue: Queue, records_queue: Queue, json_file: str
     max_timespread = calculate_timespread_drift(json_data["timestamps"])
 
     records_queue.put({"filename": current_filename, "timestamp_spread": max_timespread, "recording_timestamp": local_times[0]})
-
-    json_queue.task_done()
 
 
 
