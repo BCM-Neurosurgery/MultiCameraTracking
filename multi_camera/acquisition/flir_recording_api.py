@@ -744,7 +744,9 @@ class FlirRecorder:
         # Initializing a json queue for each camera
         self.json_queue = Queue(max_frames)
 
-        self.records_queue = Queue(max_frames)
+        # Per-segment records are small summary objects; avoid backpressure in long
+        # continuous runs by not bounding this queue by frame count.
+        self.records_queue = Queue()
 
         # set up the threads to write videos to disk, if requested
         if self.video_base_file is not None:
