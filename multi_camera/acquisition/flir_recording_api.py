@@ -105,6 +105,41 @@ def safe_put(q, item):
         print("queue full, dropping item")
         pass
 
+
+def get_image_with_timeout(c: Camera, timeout_ms: int):
+    """
+    Retrieve the next image with a bounded wait when supported by the camera API.
+    """
+    raw_cam = getattr(c, "cam", None)
+    if raw_cam is not None and hasattr(raw_cam, "GetNextImage"):
+        return raw_cam.GetNextImage(timeout_ms)
+
+    get_image = getattr(c, "get_image", None)
+    if get_image is None:
+        raise RuntimeError("Camera object has no image retrieval method")
+
+    # Try common timeout signatures exposed by wrappers.
+    timeout_variants = [
+        ((), {"timeout": timeout_ms}),
+        ((), {"timeout_ms": timeout_ms}),
+        ((timeout_ms,), {}),
+    ]
+    last_type_error = None
+    for args, kwargs in timeout_variants:
+        try:
+            return get_image(*args, **kwargs)
+        except TypeError as e:
+            last_type_error = e
+            continue
+
+    raise NotImplementedError("Camera API does not expose timeout-capable image retrieval") from last_type_error
+
+
+def is_image_timeout_error(err: Exception) -> bool:
+    text = str(err).lower()
+    cls = err.__class__.__name__.lower()
+    return "timeout" in text or "timed out" in text or "time out" in text or "timeout" in cls
+
 def init_camera(
     c: Camera,
     jumbo_packet: bool = True,
@@ -823,6 +858,10 @@ class FlirRecorder:
         self.iface.TLInterface.ActionCommand()
 
         frame_idx = 0
+        acquisition_settings = self.camera_config.get("acquisition-settings", {}) if isinstance(self.camera_config, dict) else {}
+        image_timeout_ms = int(acquisition_settings.get("image_timeout_ms", 1000))
+        max_consecutive_timeouts = int(acquisition_settings.get("max_consecutive_timeouts", 30))
+        timeout_streaks = {c.DeviceSerialNumber: 0 for c in self.cams}
 
         if self.camera_config["acquisition-type"] == "continuous":
             total_frames = self.camera_config["acquisition-settings"]["video_segment_len"]
@@ -891,11 +930,28 @@ class FlirRecorder:
             frame_metadata["frame_rates_binning"] = []
 
             for c in self.cams:
+                serial = c.DeviceSerialNumber
                 try:
-                    im_ref = c.get_image()
+                    im_ref = get_image_with_timeout(c, image_timeout_ms)
                 except Exception as e:
-                    tqdm.write(f"{c.DeviceSerialNumber}: failed to get image ({e})")
+                    if is_image_timeout_error(e):
+                        timeout_streaks[serial] += 1
+                        if timeout_streaks[serial] == 1 or timeout_streaks[serial] % 10 == 0:
+                            tqdm.write(
+                                f"{serial}: image timeout streak {timeout_streaks[serial]} "
+                                f"(timeout_ms={image_timeout_ms})"
+                            )
+                        if timeout_streaks[serial] >= max_consecutive_timeouts:
+                            raise RuntimeError(
+                                f"{serial}: exceeded max consecutive image timeouts "
+                                f"({max_consecutive_timeouts})"
+                            ) from e
+                        continue
+
+                    tqdm.write(f"{serial}: failed to get image ({e})")
                     continue
+
+                timeout_streaks[serial] = 0
 
                 # Always release the image reference, regardless of success/failure path.
                 try:
@@ -903,7 +959,7 @@ class FlirRecorder:
                     # just drop this frame
                     if im_ref.IsIncomplete():
                         im_stat = im_ref.GetImageStatus()
-                        print(f"{c.DeviceSerialNumber}: Image incomplete | "
+                        print(f"{serial}: Image incomplete | "
                               f"{PySpin.Image.GetImageStatusDescription(im_stat)}"
                         )
                         continue
@@ -936,7 +992,7 @@ class FlirRecorder:
                     frame_metadata["frame_id_abs"].append(frame_id_abs)
                     frame_metadata["chunk_serial_data"].append(frame_count)
                     frame_metadata["serial_msg"].append(serial_msg)
-                    frame_metadata["camera_serials"].append(c.DeviceSerialNumber)
+                    frame_metadata["camera_serials"].append(serial)
                     frame_metadata["exposure_times"].append(c.ExposureTime)
                     frame_metadata["frame_rates_binning"].append(c.BinningHorizontal * 30)
                     frame_metadata["frame_rates_requested"].append(c.AcquisitionFrameRate)
@@ -951,14 +1007,14 @@ class FlirRecorder:
                             # and append the image from each camera to a list
                             real_time_images.append(im)
 
-                    except Exception:
-                        tqdm.write("Bad frame")
+                    except Exception as e:
+                        tqdm.write(f"Bad frame from {serial}: {e}")
                         continue
 
                     if self.video_base_file is not None:
                         # Writing the frame information for the current camera to its queue
                         safe_put(
-                            self.image_queue_dict[c.DeviceSerialNumber],
+                            self.image_queue_dict[serial],
                             {
                                 "im": im,
                                 "real_times": real_time,
