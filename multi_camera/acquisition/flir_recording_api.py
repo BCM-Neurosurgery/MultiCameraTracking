@@ -317,66 +317,76 @@ def write_image_queue(
     frame_spreads = []
 
     out_video = None
+    frame_num = 0
 
-    for frame_num, frame in enumerate(iter(image_queue.get, None)):
-        if frame is None:
-            break
+    try:
+        while True:
+            frame = image_queue.get()
+            try:
+                if frame is None:
+                    break
 
-        # timestamps.append(frame["timestamps"])
-        real_times.append(frame["real_times"])
+                # timestamps.append(frame["timestamps"])
+                real_times.append(frame["real_times"])
 
-        im = frame["im"]
+                im = frame["im"]
 
-        if pixel_format == "BayerRG8":
-            im = cv2.cvtColor(im, cv2.COLOR_BAYER_RG2RGB)
+                if pixel_format == "BayerRG8":
+                    im = cv2.cvtColor(im, cv2.COLOR_BAYER_RG2RGB)
 
-        # need to collect two frames to track the FPS
-        if out_video is None and len(real_times) == 1:
-            last_im = im
+                # need to collect two frames to track the FPS
+                if out_video is None and len(real_times) == 1:
+                    last_im = im
 
-        elif out_video is None and len(real_times) > 1:
-            # Get the video file for the current frame
-            vid_file = frame["base_filename"] + f".{serial}.mp4"
+                elif out_video is None and len(real_times) > 1:
+                    # Get the video file for the current frame
+                    vid_file = frame["base_filename"] + f".{serial}.mp4"
 
-            tqdm.write(f"Writing FPS: {acquisition_fps}")
+                    tqdm.write(f"Writing FPS: {acquisition_fps}")
 
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
-            out_video = cv2.VideoWriter(vid_file, fourcc, acquisition_fps, (im.shape[1], im.shape[0]))
-            out_video.write(last_im)
+                    out_video = cv2.VideoWriter(vid_file, fourcc, acquisition_fps, (im.shape[1], im.shape[0]))
+                    out_video.write(last_im)
 
-        elif frame_num % video_segment_len == 0 and acquisition_type == "continuous":
-            # video_segment_num += 1
+                elif frame_num % video_segment_len == 0 and acquisition_type == "continuous":
+                    # video_segment_num += 1
+                    if out_video is not None:
+                        out_video.release()
+                    real_times = []
 
+                    # Get the video file for the current frame
+                    vid_file = frame["base_filename"] + f".{serial}.mp4"
+
+                    tqdm.write(f"Writing FPS: {acquisition_fps}")
+
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    print("writing to", vid_file)
+                    out_video = cv2.VideoWriter(vid_file, fourcc, acquisition_fps, (im.shape[1], im.shape[0]))
+                    out_video.write(im)
+
+                else:
+                    if out_video is not None:
+                        out_video.write(im)
+
+                    # Check the timestamp spread between the current frame and previous frame
+                    # Skip if either timestamp is 0
+                    # if timestamps[-1] != 0 and timestamps[-2] != 0:
+                    #     spread = (timestamps[-1] - timestamps[-2]) * 1e-6
+                    #     buffer_fps = acquisition_fps * 1.2
+                    #     if spread > buffer_fps:
+                    #         print(f"Warning | {serial} Timestamp spread: {spread} {acquisition_fps} {buffer_fps}")
+                    #         print("Timestamps: ",timestamps[-1], timestamps[-2])
+                    #         # frame_spreads.append((timestamps[-1] - timestamps[-2]) * 1e-6)
+
+                frame_num += 1
+            except Exception as e:
+                tqdm.write(f"write_image_queue error ({serial}): {e}")
+            finally:
+                image_queue.task_done()
+    finally:
+        if out_video is not None:
             out_video.release()
-            real_times = []
-
-            # Get the video file for the current frame
-            vid_file = frame["base_filename"] + f".{serial}.mp4"
-
-            tqdm.write(f"Writing FPS: {acquisition_fps}")
-
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            print("writing to", vid_file)
-            out_video = cv2.VideoWriter(vid_file, fourcc, acquisition_fps, (im.shape[1], im.shape[0]))
-            out_video.write(im)
-
-        else:
-            out_video.write(im)
-
-            # Check the timestamp spread between the current frame and previous frame
-            # Skip if either timestamp is 0
-            # if timestamps[-1] != 0 and timestamps[-2] != 0:
-            #     spread = (timestamps[-1] - timestamps[-2]) * 1e-6
-            #     buffer_fps = acquisition_fps * 1.2
-            #     if spread > buffer_fps:
-            #         print(f"Warning | {serial} Timestamp spread: {spread} {acquisition_fps} {buffer_fps}")
-            #         print("Timestamps: ",timestamps[-1], timestamps[-2])
-            #         # frame_spreads.append((timestamps[-1] - timestamps[-2]) * 1e-6)
-
-        image_queue.task_done()
-
-    out_video.release()
 
     # average frame time from ns to s
     ts = np.asarray(timestamps)
@@ -385,8 +395,7 @@ def write_image_queue(
 
     print(f"Finished writing images. Final fps: {fps}")
 
-    # indicate the last None event is handled
-    image_queue.task_done()
+    # Sentinel item is accounted for via the per-item finally task_done().
 
 def calculate_timespread_drift(timestamps):
     # Calculating metrics to determine drift
