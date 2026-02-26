@@ -94,7 +94,7 @@ def select_interface(interface, cameras):
     # If there are no cameras on the interface, return None
     return retval
 
-def safe_put(q, item):
+def safe_put(q, item, queue_name: str = None):
     """
     Insert items into the queue without blocking it.
     If the queue is full, discard it.
@@ -102,7 +102,10 @@ def safe_put(q, item):
     try:
         q.put_nowait(item)
     except queue.Full:
-        print("queue full, dropping item")
+        if queue_name:
+            print(f"{queue_name} full, dropping item")
+        else:
+            print("queue full, dropping item")
         pass
 
 
@@ -776,9 +779,7 @@ class FlirRecorder:
             config_metadata["camera_config_hash"] = camera_config_hash
         else:
             config_metadata["meta_info"] = "No Config"
-            config_metadata["camera_info"] = camera_ids
-            config_metadata["exposure_times"] = exposure_times
-            config_metadata["frame_rate_requested"] = frame_rates
+            config_metadata["camera_info"] = [c.DeviceSerialNumber for c in self.cams]
             config_metadata["camera_config_hash"] = None
 
         # Initializing an image queue for each camera
@@ -1027,12 +1028,13 @@ class FlirRecorder:
                                     "timestamps": timestamp,
                                     "base_filename": self.video_base_file,
                                 },
+                                queue_name=f"image_queue:{serial}",
                             )
                     finally:
                         im_ref.Release()
                 if self.video_base_file is not None:
                     # put the frame metadata into the json queue
-                    safe_put(self.json_queue, frame_metadata)
+                    safe_put(self.json_queue, frame_metadata, queue_name="json_queue")
 
                 if preview_this_frame:
                     self.preview_callback(real_time_images)
