@@ -18,6 +18,7 @@ import os
 import yaml
 import pandas as pd
 import hashlib
+import sqlite3
 
 
 # Data structures we will expose outside this library
@@ -107,6 +108,144 @@ def safe_put(q, item, queue_name: str = None):
         else:
             print("queue full, dropping item")
         pass
+
+
+def set_worker_error(worker_error_state: dict, message: str):
+    if worker_error_state is None:
+        return
+    worker_error_state["message"] = message
+    event = worker_error_state.get("event")
+    if event is not None:
+        event.set()
+
+
+def put_metadata_or_fail(q: Queue, item: dict, timeout_s: float, worker_error_state: dict = None):
+    """
+    Metadata is sync-critical. Never silently drop it when the queue is full.
+    """
+    try:
+        q.put(item, timeout=timeout_s)
+    except queue.Full as e:
+        msg = (
+            f"CRITICAL: metadata queue full after {timeout_s:.2f}s; "
+            "stopping acquisition to protect sync integrity"
+        )
+        set_worker_error(worker_error_state, msg)
+        raise RuntimeError(msg) from e
+
+
+def get_finalize_jobs_db_path(base_dir: str) -> str:
+    return os.path.join(base_dir, "metadata_finalize_jobs.sqlite3")
+
+
+def init_finalize_jobs_db(db_path: str):
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metadata_finalize_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base_filename TEXT NOT NULL,
+                recording_timestamp TEXT NOT NULL,
+                config_metadata_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                retries INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_metadata_finalize_jobs_status_created
+            ON metadata_finalize_jobs(status, created_at)
+            """
+        )
+        conn.commit()
+
+
+def enqueue_finalize_job(
+    db_path: str,
+    base_filename: str,
+    recording_timestamp: datetime,
+    config_metadata: dict,
+):
+    now = datetime.utcnow().isoformat()
+    rec_ts = recording_timestamp.isoformat() if isinstance(recording_timestamp, datetime) else str(recording_timestamp)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO metadata_finalize_jobs (
+                base_filename, recording_timestamp, config_metadata_json, status, created_at, updated_at
+            ) VALUES (?, ?, ?, 'pending', ?, ?)
+            """,
+            (base_filename, rec_ts, json.dumps(config_metadata), now, now),
+        )
+        conn.commit()
+
+
+def claim_next_finalize_job(conn: sqlite3.Connection):
+    conn.execute("BEGIN IMMEDIATE")
+    row = conn.execute(
+        """
+        SELECT id, base_filename, recording_timestamp, config_metadata_json
+        FROM metadata_finalize_jobs
+        WHERE status='pending'
+        ORDER BY created_at ASC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        conn.execute("COMMIT")
+        return None
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        UPDATE metadata_finalize_jobs
+        SET status='in_progress', updated_at=?
+        WHERE id=?
+        """,
+        (now, row[0]),
+    )
+    conn.execute("COMMIT")
+    return row
+
+
+def mark_finalize_job_done(conn: sqlite3.Connection, job_id: int):
+    conn.execute(
+        """
+        UPDATE metadata_finalize_jobs
+        SET status='done', updated_at=?
+        WHERE id=?
+        """,
+        (datetime.utcnow().isoformat(), job_id),
+    )
+    conn.commit()
+
+
+def mark_finalize_job_failed(conn: sqlite3.Connection, job_id: int, err: str):
+    conn.execute(
+        """
+        UPDATE metadata_finalize_jobs
+        SET status='failed', retries=retries+1, last_error=?, updated_at=?
+        WHERE id=?
+        """,
+        (err, datetime.utcnow().isoformat(), job_id),
+    )
+    conn.commit()
+
+
+def count_pending_finalize_jobs(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM metadata_finalize_jobs
+        WHERE status IN ('pending', 'in_progress')
+        """
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def get_image_with_timeout(c: Camera, timeout_ms: int):
@@ -455,116 +594,191 @@ def calculate_timespread_drift(timestamps):
 
     return np.max(spread) * 1000
 
-def write_metadata_queue(json_queue: Queue, records_queue: Queue, json_file: str, config_metadata: dict):
+
+def build_metadata_journal_record(frame: dict) -> dict:
+    return {
+        "real_times": frame["real_times"],
+        "timestamps": frame["timestamps"],
+        "frame_id": frame["frame_id"],
+        "frame_id_abs": frame["frame_id_abs"],
+        "chunk_serial_data": frame["chunk_serial_data"],
+        "serial_msg": frame["serial_msg"],
+        "camera_serials": frame["camera_serials"],
+        "exposure_times": frame["exposure_times"],
+        "frame_rates_requested": frame["frame_rates_requested"],
+        "frame_rates_binning": frame["frame_rates_binning"],
+    }
+
+
+def finalize_legacy_json(base_filename: str, config_metadata: dict, recording_timestamp: datetime, records_queue: Queue):
     """
-    Write metadata from the queue to a json file
+    Build the legacy segment JSON shape from the append-only metadata journal.
+    """
+    journal_file = base_filename + ".metadata.jsonl"
+    json_file = base_filename + ".json"
+    tmp_file = json_file + ".tmp"
+
+    json_data = {
+        "real_times": [],
+        "timestamps": [],
+        "frame_id": [],
+        "frame_id_abs": [],
+        "chunk_serial_data": [],
+        "serial_msg": [],
+        "serials": [],
+        "camera_config_hash": config_metadata["camera_config_hash"],
+        "camera_info": config_metadata["camera_info"],
+        "meta_info": config_metadata["meta_info"],
+        "exposure_times": [],
+        "frame_rates_requested": [],
+        "frame_rates_binning": [],
+    }
+
+    last_row = None
+    with open(journal_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            last_row = row
+            json_data["real_times"].append(row["real_times"])
+            json_data["timestamps"].append(row["timestamps"])
+            json_data["frame_id"].append(row["frame_id"])
+            json_data["frame_id_abs"].append(row["frame_id_abs"])
+            json_data["chunk_serial_data"].append(row["chunk_serial_data"])
+            json_data["serial_msg"].append(row["serial_msg"])
+
+    if last_row is None:
+        return
+
+    json_data["serials"] = last_row["camera_serials"]
+    json_data["exposure_times"] = last_row["exposure_times"]
+    json_data["frame_rates_requested"] = last_row["frame_rates_requested"]
+    json_data["frame_rates_binning"] = last_row["frame_rates_binning"]
+
+    with open(tmp_file, "w") as f:
+        json.dump(json_data, f)
+        f.write("\n")
+    os.replace(tmp_file, json_file)
+
+    # Placeholder to avoid expensive realtime drift computation in acquisition.
+    records_queue.put(
+        {
+            "filename": base_filename,
+            "timestamp_spread": 0.0,
+            "recording_timestamp": recording_timestamp,
+        }
+    )
+
+
+def metadata_finalize_queue(
+    finalize_jobs_db: str,
+    records_queue: Queue,
+    stop_event: threading.Event,
+    worker_error_state: dict = None,
+):
+    """
+    Convert per-frame journal files back into legacy segment JSON files by
+    consuming a durable SQLite-backed finalize job store.
+    """
+    conn = sqlite3.connect(finalize_jobs_db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        while True:
+            if stop_event.is_set() and count_pending_finalize_jobs(conn) == 0:
+                break
+
+            job = claim_next_finalize_job(conn)
+            if job is None:
+                time.sleep(0.2)
+                continue
+
+            job_id, base_filename, recording_ts, config_metadata_json = job
+            try:
+                parsed_ts = datetime.fromisoformat(recording_ts)
+                config_metadata = json.loads(config_metadata_json)
+                finalize_legacy_json(
+                    base_filename=base_filename,
+                    config_metadata=config_metadata,
+                    recording_timestamp=parsed_ts,
+                    records_queue=records_queue,
+                )
+                mark_finalize_job_done(conn, job_id)
+            except Exception as e:
+                err = str(e)
+                msg = f"metadata finalize failure (job_id={job_id}): {err}"
+                tqdm.write(msg)
+                mark_finalize_job_failed(conn, job_id, err)
+                set_worker_error(worker_error_state, msg)
+                break
+    finally:
+        conn.close()
+
+
+def write_metadata_queue(
+    json_queue: Queue,
+    finalize_jobs_db: str,
+    json_file: str,
+    config_metadata: dict,
+    worker_error_state: dict = None,
+):
+    """
+    Write metadata from the queue to an append-only per-frame journal.
+    Segment finalization is delegated to metadata_finalize_queue.
 
     Args:
         json_queue (Queue): Queue to read metadata from
         json_file (str): Path to json file
 
-    This is expected to be called from a standalone thread and will automatically terminate when the json_queue is empty.
+    This is expected to be called from a standalone thread and will
+    terminate after receiving a sentinel (`None`).
     """
+    current_filename = None
+    current_first_local_time = None
+    out = None
 
-    current_filename = json_file
+    try:
+        while True:
+            frame = json_queue.get()
+            try:
+                if frame is None:
+                    break
 
-    local_times = []
+                base_filename = frame["base_filename"] if frame["base_filename"] is not None else json_file
+                if current_filename != base_filename:
+                    if out is not None:
+                        out.close()
+                        enqueue_finalize_job(
+                            db_path=finalize_jobs_db,
+                            base_filename=current_filename,
+                            recording_timestamp=current_first_local_time,
+                            config_metadata=config_metadata,
+                        )
 
-    json_data = {}
-    json_data["real_times"] = []
-    json_data["timestamps"] = []
-    json_data["frame_id"] = []
-    json_data["frame_id_abs"] = []
-    json_data["chunk_serial_data"] = []
-    json_data["serial_msg"] = []
+                    current_filename = base_filename
+                    out = open(current_filename + ".metadata.jsonl", "a", buffering=1)
+                    current_first_local_time = frame["local_times"]
 
-    last_frame = None
-
-    while True:
-        frame = json_queue.get()
-        try:
-            if frame is None:
+                record = build_metadata_journal_record(frame)
+                out.write(json.dumps(record))
+                out.write("\n")
+            except Exception as e:
+                msg = f"metadata journal write failure: {e}"
+                tqdm.write(msg)
+                set_worker_error(worker_error_state, msg)
                 break
-
-            last_frame = frame
-
-            if current_filename != frame["base_filename"]:
-
-                # This means a new file should be started
-                json_file = current_filename + ".json"
-
-                # Get the camera serial IDs
-                json_data["serials"] = frame["camera_serials"]
-                json_data["camera_config_hash"] = config_metadata["camera_config_hash"]
-                json_data["camera_info"] = config_metadata["camera_info"]
-                json_data["meta_info"] = config_metadata["meta_info"]
-                # Get the current camera settings for each camera before writing
-                json_data["exposure_times"] = frame["exposure_times"]
-                json_data["frame_rates_requested"] = frame["frame_rates_requested"]
-                json_data["frame_rates_binning"] = frame["frame_rates_binning"]
-
-                with open(json_file, "w") as f:
-                    json.dump(json_data, f)
-                    f.write("\n")
-
-                # Placeholder to avoid expensive drift computation in the realtime
-                # metadata writer path. Compute offline if needed.
-                max_timespread = 0.0
-
-                # add the current filename, max timespread, first of the local_times to the records queue
-                records_queue.put(
-                    {"filename": current_filename, "timestamp_spread": max_timespread, "recording_timestamp": local_times[0]}
-                )
-
-                current_filename = frame["base_filename"]
-
-                # reset the json lists for the new segment
-                json_data = {}
-                json_data["real_times"] = [frame["real_times"]]
-                local_times = [frame["local_times"]]
-                json_data["timestamps"] = [frame["timestamps"]]
-                json_data["frame_id"] = [frame["frame_id"]]
-                json_data["frame_id_abs"] = [frame["frame_id_abs"]]
-                json_data["chunk_serial_data"] = [frame["chunk_serial_data"]]
-                json_data["serial_msg"] = [frame["serial_msg"]]
-
-            else:
-                # This means we are still writing to the same json file
-                json_data["real_times"].append(frame["real_times"])
-                local_times.append(frame["local_times"])
-                json_data["timestamps"].append(frame["timestamps"])
-                json_data["frame_id"].append(frame["frame_id"])
-                json_data["frame_id_abs"].append(frame["frame_id_abs"])
-                json_data["chunk_serial_data"].append(frame["chunk_serial_data"])
-                json_data["serial_msg"].append(frame["serial_msg"])
-        finally:
-            json_queue.task_done()
-
-    if last_frame is None:
-        return
-
-    # write the last json file with the remaining data
-    json_file = current_filename + ".json"
-
-    # Get the information from the config file
-    json_data["serials"] = last_frame["camera_serials"]
-    json_data["camera_config_hash"] = config_metadata["camera_config_hash"]
-    json_data["camera_info"] = config_metadata["camera_info"]
-    json_data["meta_info"] = config_metadata["meta_info"]
-    # Get the current camera settings for each camera before writing
-    json_data["exposure_times"] = last_frame["exposure_times"]
-    json_data["frame_rates_requested"] = last_frame["frame_rates_requested"]
-    json_data["frame_rates_binning"] = last_frame["frame_rates_binning"]
-
-    with open(json_file, "w") as f:
-        json.dump(json_data, f)
-        f.write("\n")
-
-    # Placeholder to avoid expensive drift computation in the realtime
-    # metadata writer path. Compute offline if needed.
-    max_timespread = 0.0
-
-    records_queue.put({"filename": current_filename, "timestamp_spread": max_timespread, "recording_timestamp": local_times[0]})
+            finally:
+                json_queue.task_done()
+    finally:
+        if out is not None:
+            out.close()
+            enqueue_finalize_job(
+                db_path=finalize_jobs_db,
+                base_filename=current_filename,
+                recording_timestamp=current_first_local_time,
+                config_metadata=config_metadata,
+            )
 
 
 
@@ -581,6 +795,10 @@ class FlirRecorder:
         self.preview_callback = None
         self.cams = []
         self.image_queue_dict = {}
+        self.json_queue = None
+        self.finalize_jobs_db = None
+        self.finalize_stop_event = threading.Event()
+        self.writer_error = {"event": threading.Event(), "message": None}
         self.config_file = None
         self.iface = None
         self.status_callback = status_callback
@@ -795,19 +1013,27 @@ class FlirRecorder:
         # Per-segment records are small summary objects; avoid backpressure in long
         # continuous runs by not bounding this queue by frame count.
         self.records_queue = Queue()
+        self.writer_error["event"].clear()
+        self.writer_error["message"] = None
         records = []
         cameras_started = False
         writers_started = False
+        metadata_writer_thread = None
+        metadata_finalize_thread = None
         prog = None
 
         try:
             # set up the threads to write videos to disk, if requested
             if self.video_base_file is not None:
+                finalize_base_dir = self.video_path if getattr(self, "video_path", "") else "."
+                self.finalize_jobs_db = get_finalize_jobs_db_path(finalize_base_dir)
+                init_finalize_jobs_db(self.finalize_jobs_db)
+                self.finalize_stop_event.clear()
 
                 # Start a writing thread for each camera
                 for c in self.cams:
                     serial = c.DeviceSerialNumber
-                    threading.Thread(
+                    t = threading.Thread(
                         name=f"write_image_{serial}",
                         target=write_image_queue,
                         kwargs={
@@ -820,19 +1046,35 @@ class FlirRecorder:
                             "acquisition_type": self.camera_config["acquisition-type"],
                             "video_segment_len": self.camera_config["acquisition-settings"]["video_segment_len"],
                         },
-                    ).start()
+                    )
+                    t.start()
 
-                # Start a writing thread for the json queue
-                threading.Thread(
+                # Start a finalizer thread to produce legacy segment json from journals
+                metadata_finalize_thread = threading.Thread(
+                    name="write_metadata_finalize",
+                    target=metadata_finalize_queue,
+                    kwargs={
+                        "finalize_jobs_db": self.finalize_jobs_db,
+                        "records_queue": self.records_queue,
+                        "stop_event": self.finalize_stop_event,
+                        "worker_error_state": self.writer_error,
+                    },
+                )
+                metadata_finalize_thread.start()
+
+                # Start a writer thread for the metadata journal queue
+                metadata_writer_thread = threading.Thread(
                     name=f"write_metadata",
                     target=write_metadata_queue,
                     kwargs={
                         "json_file": self.video_base_file,
                         "json_queue": self.json_queue,
-                        "records_queue": self.records_queue,
+                        "finalize_jobs_db": self.finalize_jobs_db,
                         "config_metadata": config_metadata,
+                        "worker_error_state": self.writer_error,
                     },
-                ).start()
+                )
+                metadata_writer_thread.start()
                 writers_started = True
 
             def start_cam(i):
@@ -872,6 +1114,7 @@ class FlirRecorder:
             acquisition_settings = self.camera_config.get("acquisition-settings", {}) if isinstance(self.camera_config, dict) else {}
             image_timeout_ms = int(acquisition_settings.get("image_timeout_ms", 1000))
             max_consecutive_timeouts = int(acquisition_settings.get("max_consecutive_timeouts", 30))
+            metadata_queue_timeout_s = float(acquisition_settings.get("metadata_queue_timeout_s", 2.0))
             timeout_streaks = {c.DeviceSerialNumber: 0 for c in self.cams}
 
             if self.camera_config["acquisition-type"] == "continuous":
@@ -882,6 +1125,8 @@ class FlirRecorder:
             prog = tqdm(total=total_frames)
 
             while self.camera_config["acquisition-type"] == "continuous" or frame_idx < max_frames:
+                if self.writer_error["event"].is_set():
+                    raise RuntimeError(self.writer_error["message"] or "writer thread failure")
 
                 # Get the current real time
                 real_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -1038,7 +1283,12 @@ class FlirRecorder:
                         im_ref.Release()
                 if self.video_base_file is not None:
                     # put the frame metadata into the json queue
-                    safe_put(self.json_queue, frame_metadata, queue_name="json_queue")
+                    put_metadata_or_fail(
+                        self.json_queue,
+                        frame_metadata,
+                        timeout_s=metadata_queue_timeout_s,
+                        worker_error_state=self.writer_error,
+                    )
 
                 if preview_this_frame:
                     self.preview_callback(real_time_images)
@@ -1083,13 +1333,29 @@ class FlirRecorder:
                         self.image_queue_dict[serial].put(None)
                         self.image_queue_dict[serial].join()
 
-                self.json_queue.put(None)
-                self.json_queue.join()
+                if not self.writer_error["event"].is_set():
+                    self.json_queue.put(None)
+                    self.json_queue.join()
+                elif metadata_writer_thread is not None and metadata_writer_thread.is_alive():
+                    try:
+                        self.json_queue.put(None, timeout=1.0)
+                    except queue.Full:
+                        pass
+
+                if metadata_writer_thread is not None:
+                    metadata_writer_thread.join(timeout=10)
+
+                self.finalize_stop_event.set()
+                if metadata_finalize_thread is not None:
+                    metadata_finalize_thread.join(timeout=20)
 
             while not self.records_queue.empty():
                 records.append(self.records_queue.get())
                 self.records_queue.task_done()
             self.records_queue.join()
+
+            if self.writer_error["event"].is_set():
+                raise RuntimeError(self.writer_error["message"] or "writer thread failure")
 
             self.set_status("Idle")
 
