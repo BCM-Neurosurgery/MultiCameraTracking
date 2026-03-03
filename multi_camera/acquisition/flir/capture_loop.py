@@ -1,3 +1,5 @@
+"""Low-level frame fetch helpers and timeout classification for capture."""
+
 from __future__ import annotations
 
 from simple_pyspin import Camera

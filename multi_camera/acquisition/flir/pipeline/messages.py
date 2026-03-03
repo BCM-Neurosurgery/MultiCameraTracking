@@ -1,3 +1,5 @@
+"""Typed message payloads exchanged between FLIR acquisition pipeline stages."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

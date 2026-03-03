@@ -1,3 +1,5 @@
+"""Metadata worker loops: journal writes and legacy JSON finalization."""
+
 from __future__ import annotations
 
 from datetime import datetime

@@ -1,3 +1,5 @@
+"""Hot-path frame acquisition loop that dispatches image and metadata queues."""
+
 from __future__ import annotations
 
 from datetime import datetime

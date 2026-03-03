@@ -1,3 +1,5 @@
+"""Queue builders and enqueue policies used by the FLIR recording pipeline."""
+
 from __future__ import annotations
 
 import queue

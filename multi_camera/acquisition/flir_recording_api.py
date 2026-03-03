@@ -1,3 +1,5 @@
+"""Public FLIR recorder facade used by backend API and CLI entrypoint."""
+
 import PySpin
 import simple_pyspin
 from simple_pyspin import Camera
@@ -16,6 +18,11 @@ import hashlib
 from multi_camera.acquisition.flir.camera_control import (
     init_camera as camera_init_camera,
     select_interface as camera_select_interface,
+)
+from multi_camera.acquisition.flir.camera_runtime import (
+    arm_cameras_and_issue_trigger as camera_arm_cameras_and_issue_trigger,
+    start_camera_streams as camera_start_camera_streams,
+    stop_cameras as camera_stop_cameras,
 )
 from multi_camera.acquisition.flir.capture_runner import run_capture_loop as capture_run_capture_loop
 from multi_camera.acquisition.flir.recorder_service import RecorderService
@@ -254,42 +261,6 @@ class FlirRecorder:
             config_metadata["camera_config_hash"] = None
         return config_metadata
 
-    def _start_camera_streams(self):
-        def start_cam(i):
-            # this won't truly start them until command is sent below
-            self.cams[i].start()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.cams)) as executor:
-            list(executor.map(start_cam, range(len(self.cams))))
-
-    def _arm_cameras_and_issue_trigger(self):
-        print("Acquisition, Resulting, Exposure, DeviceLinkThroughputLimit:")
-        for c in self.cams:
-            print(
-                f"{c.DeviceSerialNumber}: {c.AcquisitionFrameRate}, {c.AcquisitionResultingFrameRate}, {c.ExposureTime}, {c.DeviceLinkThroughputLimit} "
-            )
-            print(f"Frame Size: {c.Width} {c.Height}")
-
-            if self.gpio_settings["line2"] == "3V3_Enable":
-                c.LineSelector = "Line2"
-                c.LineMode = "Input"
-                c.V3_3Enable = True
-            if self.gpio_settings["line3"] == "SerialOn":
-                print(c.SerialReceiveQueueCurrentCharacterCount)
-                print(c.SerialReceiveQueueMaxCharacterCount)
-                c.SerialReceiveQueueClear()
-                print(c.SerialReceiveQueueCurrentCharacterCount)
-
-        # schedule a command to start in 250 ms in the future
-        self.cams[0].TimestampLatch()
-        value = self.cams[0].TimestampLatchValue
-        latch_value = int(value + 0.250 * 1e9)
-        self.iface.TLInterface.GevActionTime.SetValue(latch_value)
-        self.iface.TLInterface.GevActionGroupKey.SetValue(1)  # these group/mask/device numbers should match above
-        self.iface.TLInterface.GevActionGroupMask.SetValue(1)
-        self.iface.TLInterface.GevActionDeviceKey.SetValue(0)
-        self.iface.TLInterface.ActionCommand()
-
     def _run_capture_loop(self, max_frames: int):
         return capture_run_capture_loop(recorder=self, max_frames=max_frames)
 
@@ -299,22 +270,6 @@ class FlirRecorder:
                 self.preview_callback(None)
             except Exception as e:
                 tqdm.write(f"Preview callback shutdown error: {e}")
-
-    def _stop_cameras(self, cameras_started: bool):
-        for c in self.cams:
-            if getattr(self, "gpio_settings", {}).get("line2") == "3V3_Enable":
-                try:
-                    c.LineSelector = "Line2"
-                    c.V3_3Enable = False
-                    c.LineMode = "Output"
-                except Exception as e:
-                    tqdm.write(f"Failed to disable 3V3 on {c.DeviceSerialNumber}: {e}")
-
-            if cameras_started:
-                try:
-                    c.stop()
-                except Exception as e:
-                    tqdm.write(f"Failed to stop camera {c.DeviceSerialNumber}: {e}")
 
     def start_acquisition(self, recording_path=None, preview_callback: callable = None, max_frames: int = 1000):
         """
@@ -338,9 +293,9 @@ class FlirRecorder:
             # Phase 1: start queue-owned workers.
             worker_handles = recorder_service.start_workers(config_metadata=config_metadata)
             # Phase 2: start + arm cameras.
-            self._start_camera_streams()
+            camera_start_camera_streams(self.cams)
             cameras_started = True
-            self._arm_cameras_and_issue_trigger()
+            camera_arm_cameras_and_issue_trigger(self.cams, self.iface, self.gpio_settings)
 
             # Phase 3: capture loop.
             self._run_capture_loop(max_frames=max_frames)
@@ -349,7 +304,7 @@ class FlirRecorder:
         finally:
             # Phase 4: orderly shutdown.
             self._shutdown_preview()
-            self._stop_cameras(cameras_started=cameras_started)
+            camera_stop_cameras(self.cams, getattr(self, "gpio_settings", {}), cameras_started)
             if worker_handles is not None and worker_handles.writers_started:
                 recorder_service.stop_workers(worker_handles)
             records = recorder_service.collect_records()

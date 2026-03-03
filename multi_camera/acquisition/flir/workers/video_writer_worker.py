@@ -1,3 +1,5 @@
+"""Video writer worker that drains per-camera frame queues into MP4 files."""
+
 from __future__ import annotations
 
 from queue import Queue

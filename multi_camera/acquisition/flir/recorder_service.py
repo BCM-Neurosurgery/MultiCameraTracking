@@ -1,3 +1,5 @@
+"""Queue/worker orchestration for recording sessions and graceful shutdown."""
+
 from __future__ import annotations
 
 import queue

@@ -1,3 +1,5 @@
+"""Camera discovery and one-time hardware configuration for FLIR devices."""
+
 from __future__ import annotations
 
 import PySpin
