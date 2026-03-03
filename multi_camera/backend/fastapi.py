@@ -94,7 +94,7 @@ def db_dependency():
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: List[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -113,17 +113,27 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 RECORDING_BASE = "data"
-CONFIG_PATH = "/configs/"
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "/configs/")
 DEFAULT_CONFIG = os.path.join(CONFIG_PATH, "cotton_lab_config_20230620.yaml")
 
 _default_projects = "TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036,TEST-XXXXX"
 _project_ids = os.environ.get("PROJECT_IDS", _default_projects)
 PROJECT_IDS = [project.strip() for project in _project_ids.split(",") if project.strip()]
 
-print(CONFIG_PATH)
-config_files = os.listdir(CONFIG_PATH)
-print(config_files)
-print([""] + [f for f in config_files if f.endswith(".yaml")])
+def discover_config_files(config_path: str) -> List[str]:
+    """Return config filenames for UI dropdown, keeping empty option first."""
+    try:
+        config_files = os.listdir(config_path)
+    except FileNotFoundError:
+        acquisition_logger.warning("Config directory not found: %s", config_path)
+        return [""]
+    except Exception as e:
+        acquisition_logger.error("Failed to list config directory %s: %s", config_path, e)
+        return [""]
+
+    # Support both common YAML extensions.
+    yaml_files = sorted([f for f in config_files if f.endswith((".yaml", ".yml"))])
+    return [""] + yaml_files
 # import socket
 # print(socket.gethostname())
 # print(os.environ.get("HOSTNAME", "localhost"))
@@ -505,11 +515,7 @@ async def get_recording_db(db=Depends(db_dependency)) -> List[ParticipantOut]:
 
 @api_router.get("/configs")
 async def get_configs():
-    print(CONFIG_PATH)
-    config_files = os.listdir(CONFIG_PATH)
-    print(config_files)
-    config_files = [""] + [f for f in config_files if f.endswith(".yaml")]
-    return JSONResponse(content=config_files)
+    return JSONResponse(content=discover_config_files(CONFIG_PATH))
 
 
 @api_router.get("/current_config", response_model=str)

@@ -1,0 +1,1 @@
+"""FLIR acquisition pipeline modules."""
