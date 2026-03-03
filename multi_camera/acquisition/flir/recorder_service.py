@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 from dataclasses import dataclass, field
 
 from multi_camera.acquisition.flir.pipeline.queues import build_recorder_queues
+from multi_camera.acquisition.flir.storage.encode_jobs_repo import EncodeJobsRepo, get_encode_jobs_db_path
 from multi_camera.acquisition.flir.storage.finalize_jobs_repo import FinalizeJobsRepo, get_finalize_jobs_db_path
+from multi_camera.acquisition.flir.workers.encode_worker import encode_jobs_worker
 from multi_camera.acquisition.flir.workers.metadata_workers import metadata_finalize_queue, write_metadata_queue
+from multi_camera.acquisition.flir.workers.spool_writer_worker import write_spool_queue
 from multi_camera.acquisition.flir.workers.video_writer_worker import write_image_queue
 
 
 @dataclass
 class WorkerHandles:
     image_threads: list[threading.Thread] = field(default_factory=list)
+    encode_threads: list[threading.Thread] = field(default_factory=list)
     metadata_writer_thread: threading.Thread | None = None
     metadata_finalize_thread: threading.Thread | None = None
     writers_started: bool = False
@@ -25,6 +30,9 @@ class RecorderService:
 
     def __init__(self, recorder):
         self.recorder = recorder
+        # ENCODE_ASYNC=1 switches video path from in-thread MP4 writing to:
+        # image_queue -> raw spool files -> durable SQLite encode jobs -> ffmpeg workers.
+        self.encode_async = str(os.environ.get("ENCODE_ASYNC", "0")).lower() in ("1", "true", "yes", "on")
 
     def initialize_queues(self, max_frames: int):
         camera_serials = [camera.DeviceSerialNumber for camera in self.recorder.cams]
@@ -44,12 +52,42 @@ class RecorderService:
         repo.init_db()
         self.recorder.finalize_stop_event.clear()
 
+        if self.encode_async:
+            encode_base_dir = self.recorder.video_path if getattr(self.recorder, "video_path", "") else "."
+            self.recorder.encode_jobs_db = get_encode_jobs_db_path(encode_base_dir)
+            encode_repo = EncodeJobsRepo(self.recorder.encode_jobs_db)
+            encode_repo.init_db()
+            self.recorder.encode_stop_event.clear()
+
+            num_encode_workers = int(os.environ.get("ENCODE_WORKERS", "1"))
+            for idx in range(max(1, num_encode_workers)):
+                worker_id = f"encode_worker_{idx}"
+                thread = threading.Thread(
+                    name=worker_id,
+                    target=encode_jobs_worker,
+                    kwargs={
+                        "encode_jobs_db": self.recorder.encode_jobs_db,
+                        "stop_event": self.recorder.encode_stop_event,
+                        "worker_id": worker_id,
+                    },
+                )
+                thread.start()
+                handles.encode_threads.append(thread)
+
         for camera in self.recorder.cams:
             serial = camera.DeviceSerialNumber
-            thread = threading.Thread(
-                name=f"write_image_{serial}",
-                target=write_image_queue,
-                kwargs={
+            if self.encode_async:
+                target = write_spool_queue
+                kwargs = {
+                    "image_queue": self.recorder.image_queue_dict[serial],
+                    "serial": serial,
+                    "pixel_format": self.recorder.pixel_format,
+                    "acquisition_fps": camera.AcquisitionFrameRate,
+                    "encode_jobs_db": self.recorder.encode_jobs_db,
+                }
+            else:
+                target = write_image_queue
+                kwargs = {
                     "vid_file": self.recorder.video_base_file,
                     "image_queue": self.recorder.image_queue_dict[serial],
                     "serial": serial,
@@ -57,7 +95,12 @@ class RecorderService:
                     "acquisition_fps": camera.AcquisitionFrameRate,
                     "acquisition_type": self.recorder.camera_config["acquisition-type"],
                     "video_segment_len": self.recorder.camera_config["acquisition-settings"]["video_segment_len"],
-                },
+                }
+
+            thread = threading.Thread(
+                name=f"write_image_{serial}",
+                target=target,
+                kwargs=kwargs,
             )
             thread.start()
             handles.image_threads.append(thread)
@@ -112,6 +155,11 @@ class RecorderService:
         self.recorder.finalize_stop_event.set()
         if handles.metadata_finalize_thread is not None:
             handles.metadata_finalize_thread.join(timeout=20)
+
+        if self.encode_async and handles.encode_threads:
+            self.recorder.encode_stop_event.set()
+            for thread in handles.encode_threads:
+                thread.join(timeout=30)
 
     def collect_records(self) -> list[dict]:
         records = []

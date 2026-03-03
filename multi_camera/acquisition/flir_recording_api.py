@@ -57,7 +57,9 @@ class FlirRecorder:
         self.image_queue_dict = {}
         self.json_queue = None
         self.finalize_jobs_db = None
+        self.encode_jobs_db = None
         self.finalize_stop_event = threading.Event()
+        self.encode_stop_event = threading.Event()
         self.writer_error = {"event": threading.Event(), "message": None}
         self.config_file = None
         self.iface = None
