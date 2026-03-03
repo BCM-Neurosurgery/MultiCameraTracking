@@ -507,7 +507,9 @@ def write_metadata_queue(json_queue: Queue, records_queue: Queue, json_file: str
                     json.dump(json_data, f)
                     f.write("\n")
 
-                max_timespread = calculate_timespread_drift(json_data["timestamps"])
+                # Placeholder to avoid expensive drift computation in the realtime
+                # metadata writer path. Compute offline if needed.
+                max_timespread = 0.0
 
                 # add the current filename, max timespread, first of the local_times to the records queue
                 records_queue.put(
@@ -558,7 +560,9 @@ def write_metadata_queue(json_queue: Queue, records_queue: Queue, json_file: str
         json.dump(json_data, f)
         f.write("\n")
 
-    max_timespread = calculate_timespread_drift(json_data["timestamps"])
+    # Placeholder to avoid expensive drift computation in the realtime
+    # metadata writer path. Compute offline if needed.
+    max_timespread = 0.0
 
     records_queue.put({"filename": current_filename, "timestamp_spread": max_timespread, "recording_timestamp": local_times[0]})
 
