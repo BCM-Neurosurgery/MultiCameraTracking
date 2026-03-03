@@ -13,18 +13,11 @@ import os
 import yaml
 import hashlib
 
-from multi_camera.acquisition.flir.pipeline.queues import (
-    put_metadata_or_fail as queue_put_metadata_or_fail,
-    safe_put as queue_safe_put,
-)
-from multi_camera.acquisition.flir.capture_loop import (
-    get_image_with_timeout as capture_get_image_with_timeout,
-    is_image_timeout_error as capture_is_image_timeout_error,
-)
 from multi_camera.acquisition.flir.camera_control import (
     init_camera as camera_init_camera,
     select_interface as camera_select_interface,
 )
+from multi_camera.acquisition.flir.capture_runner import run_capture_loop as capture_run_capture_loop
 from multi_camera.acquisition.flir.recorder_service import RecorderService
 
 
@@ -40,6 +33,7 @@ class CameraStatus(BaseModel):
     Width: int = 0
     Height: int = 0
     SyncOffset: float = 0.0
+
 
 class FlirRecorder:
     def __init__(
@@ -63,11 +57,11 @@ class FlirRecorder:
         self.status_callback = status_callback
         self.set_status("Uninitialized")
 
-    def get_config_hash(self,yaml_content,hash_len=10):
+    def get_config_hash(self, yaml_content, hash_len=10):
 
         # Sorting keys to ensure consistent hashing
-        file_str = json.dumps(yaml_content,sort_keys=True)
-        encoded_config = file_str.encode('utf-8')
+        file_str = json.dumps(yaml_content, sort_keys=True)
+        encoded_config = file_str.encode("utf-8")
 
         # Create hash of encoded config file and return
         return hashlib.sha256(encoded_config).hexdigest()[:hash_len]
@@ -102,9 +96,7 @@ class FlirRecorder:
 
         self.set_status("Synchronized")
 
-    async def configure_cameras(
-        self, config_file: str = None, num_cams: int = None, trigger: bool = True
-    ) -> Awaitable[List[CameraStatus]]:
+    async def configure_cameras(self, config_file: str = None, num_cams: int = None, trigger: bool = True) -> Awaitable[List[CameraStatus]]:
         """
         Configure cameras for recording
 
@@ -177,7 +169,7 @@ class FlirRecorder:
             exposure_time = 15000
             frame_rate = 30
 
-        # Updating the binning needed to run at 60 Hz. 
+        # Updating the binning needed to run at 60 Hz.
         # TODO: make this check more robust in the future
         if frame_rate == 60:
             binning = 2
@@ -193,7 +185,7 @@ class FlirRecorder:
             "exposure_time": exposure_time,
             "frame_rate": frame_rate,
             "gpio_settings": self.gpio_settings,
-            "chunk_data": self.camera_config["acquisition-settings"]["chunk_data"]
+            "chunk_data": self.camera_config["acquisition-settings"]["chunk_data"],
         }
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.cams)) as executor:
@@ -273,14 +265,16 @@ class FlirRecorder:
     def _arm_cameras_and_issue_trigger(self):
         print("Acquisition, Resulting, Exposure, DeviceLinkThroughputLimit:")
         for c in self.cams:
-            print(f"{c.DeviceSerialNumber}: {c.AcquisitionFrameRate}, {c.AcquisitionResultingFrameRate}, {c.ExposureTime}, {c.DeviceLinkThroughputLimit} ")
+            print(
+                f"{c.DeviceSerialNumber}: {c.AcquisitionFrameRate}, {c.AcquisitionResultingFrameRate}, {c.ExposureTime}, {c.DeviceLinkThroughputLimit} "
+            )
             print(f"Frame Size: {c.Width} {c.Height}")
 
-            if self.gpio_settings['line2'] == '3V3_Enable':
-                c.LineSelector = 'Line2'
-                c.LineMode = 'Input'
+            if self.gpio_settings["line2"] == "3V3_Enable":
+                c.LineSelector = "Line2"
+                c.LineMode = "Input"
                 c.V3_3Enable = True
-            if self.gpio_settings['line3'] == 'SerialOn':
+            if self.gpio_settings["line3"] == "SerialOn":
                 print(c.SerialReceiveQueueCurrentCharacterCount)
                 print(c.SerialReceiveQueueMaxCharacterCount)
                 c.SerialReceiveQueueClear()
@@ -297,174 +291,7 @@ class FlirRecorder:
         self.iface.TLInterface.ActionCommand()
 
     def _run_capture_loop(self, max_frames: int):
-        """
-        Hot path:
-        - pull frame from each camera
-        - enqueue image frame (best-effort)
-        - enqueue metadata frame (lossless/fail-fast)
-        """
-        frame_idx = 0
-        acquisition_settings = self.camera_config.get("acquisition-settings", {}) if isinstance(self.camera_config, dict) else {}
-        image_timeout_ms = int(acquisition_settings.get("image_timeout_ms", 1000))
-        max_consecutive_timeouts = int(acquisition_settings.get("max_consecutive_timeouts", 30))
-        metadata_queue_timeout_s = float(acquisition_settings.get("metadata_queue_timeout_s", 2.0))
-        timeout_streaks = {c.DeviceSerialNumber: 0 for c in self.cams}
-
-        if self.camera_config["acquisition-type"] == "continuous":
-            total_frames = self.camera_config["acquisition-settings"]["video_segment_len"]
-        else:
-            total_frames = max_frames
-
-        prog = tqdm(total=total_frames)
-        try:
-            while self.camera_config["acquisition-type"] == "continuous" or frame_idx < max_frames:
-                if self.writer_error["event"].is_set():
-                    raise RuntimeError(self.writer_error["message"] or "writer thread failure")
-
-                # Get the current real time
-                real_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                local_time = datetime.now()
-
-                # Use thread safe checking of semaphore to determine whether to stop recording
-                if self.stop_recording.is_set():
-                    self.stop_recording.clear()
-                    print("Stopping recording")
-                    break
-
-                if self.camera_config["acquisition-type"] == "continuous":
-                    self.set_progress(frame_idx / total_frames)
-                    prog.update(1)
-
-                    # Reset progress and segment filename after each segment.
-                    if frame_idx % total_frames == 0:
-                        prog = tqdm(total=total_frames)
-                        frame_idx = 0
-
-                        if self.video_base_file is not None:
-                            now = datetime.now()
-                            time_str = now.strftime("%Y%m%d_%H%M%S")
-                            self.video_base_name = "_".join([self.video_root, time_str])
-                            self.video_base_file = os.path.join(self.video_path, self.video_base_name)
-                else:
-                    self.set_progress(frame_idx / max_frames)
-                    prog.update(1)
-
-                # for each camera, get current frame and dispatch it
-                preview_this_frame = self.preview_callback is not None and (frame_idx % 10 == 0)
-                real_time_images = [] if preview_this_frame else None
-
-                frame_metadata = {"real_times": real_time, "local_times": local_time, "base_filename": self.video_base_file}
-                frame_metadata["timestamps"] = []
-                frame_metadata["frame_id"] = []
-                frame_metadata["frame_id_abs"] = []
-                frame_metadata["chunk_serial_data"] = []
-                frame_metadata["serial_msg"] = []
-                frame_metadata["camera_serials"] = []
-                frame_metadata["exposure_times"] = []
-                frame_metadata["frame_rates_requested"] = []
-                frame_metadata["frame_rates_binning"] = []
-
-                for c in self.cams:
-                    serial = c.DeviceSerialNumber
-                    try:
-                        im_ref = capture_get_image_with_timeout(c, image_timeout_ms)
-                    except Exception as e:
-                        if capture_is_image_timeout_error(e):
-                            timeout_streaks[serial] += 1
-                            if timeout_streaks[serial] == 1 or timeout_streaks[serial] % 10 == 0:
-                                tqdm.write(
-                                    f"{serial}: image timeout streak {timeout_streaks[serial]} "
-                                    f"(timeout_ms={image_timeout_ms})"
-                                )
-                            if timeout_streaks[serial] >= max_consecutive_timeouts:
-                                raise RuntimeError(
-                                    f"{serial}: exceeded max consecutive image timeouts "
-                                    f"({max_consecutive_timeouts})"
-                                ) from e
-                            continue
-
-                        tqdm.write(f"{serial}: failed to get image ({e})")
-                        continue
-
-                    timeout_streaks[serial] = 0
-
-                    # Always release image ref regardless of success/failure path.
-                    try:
-                        if im_ref.IsIncomplete():
-                            im_stat = im_ref.GetImageStatus()
-                            print(f"{serial}: Image incomplete | {PySpin.Image.GetImageStatusDescription(im_stat)}")
-                            continue
-
-                        timestamp = im_ref.GetTimeStamp()
-                        chunk_data = im_ref.GetChunkData()
-                        frame_id = im_ref.GetFrameID()
-                        frame_id_abs = chunk_data.GetFrameID()
-
-                        serial_msg = []
-                        frame_count = -1
-                        if self.gpio_settings['line3'] == 'SerialOn':
-                            # We expect only 5 bytes to be sent.
-                            if c.ChunkSerialDataLength == 5:
-                                chunk_serial_data = c.ChunkSerialData
-                                serial_msg = chunk_serial_data
-                                split_chunk = [ord(ch) for ch in chunk_serial_data]
-
-                                # Reconstruct counter from chunk serial bytes.
-                                frame_count = 0
-                                for i, b in enumerate(split_chunk):
-                                    frame_count |= (b & 0x7F) << (7 * i)
-
-                        frame_metadata["timestamps"].append(timestamp)
-                        frame_metadata["frame_id"].append(frame_id)
-                        frame_metadata["frame_id_abs"].append(frame_id_abs)
-                        frame_metadata["chunk_serial_data"].append(frame_count)
-                        frame_metadata["serial_msg"].append(serial_msg)
-                        frame_metadata["camera_serials"].append(serial)
-                        frame_metadata["exposure_times"].append(c.ExposureTime)
-                        frame_metadata["frame_rates_binning"].append(c.BinningHorizontal * 30)
-                        frame_metadata["frame_rates_requested"].append(c.AcquisitionFrameRate)
-
-                        try:
-                            im = im_ref.GetNDArray()
-                            if preview_this_frame:
-                                real_time_images.append(im)
-                        except Exception as e:
-                            tqdm.write(f"Bad frame from {serial}: {e}")
-                            continue
-
-                        if self.video_base_file is not None:
-                            # Best-effort video queue.
-                            queue_safe_put(
-                                self.image_queue_dict[serial],
-                                {
-                                    "im": im,
-                                    "real_times": real_time,
-                                    "timestamps": timestamp,
-                                    "base_filename": self.video_base_file,
-                                },
-                                queue_name=f"image_queue:{serial}",
-                            )
-                    finally:
-                        im_ref.Release()
-
-                if self.video_base_file is not None:
-                    # Sync-critical metadata queue: lossless + fail-fast.
-                    queue_put_metadata_or_fail(
-                        self.json_queue,
-                        frame_metadata,
-                        timeout_s=metadata_queue_timeout_s,
-                        worker_error_state=self.writer_error,
-                    )
-
-                if preview_this_frame:
-                    self.preview_callback(real_time_images)
-
-                frame_idx += 1
-        finally:
-            try:
-                prog.close()
-            except Exception:
-                pass
+        return capture_run_capture_loop(recorder=self, max_frames=max_frames)
 
     def _shutdown_preview(self):
         if self.preview_callback:
@@ -475,11 +302,11 @@ class FlirRecorder:
 
     def _stop_cameras(self, cameras_started: bool):
         for c in self.cams:
-            if getattr(self, "gpio_settings", {}).get('line2') == '3V3_Enable':
+            if getattr(self, "gpio_settings", {}).get("line2") == "3V3_Enable":
                 try:
-                    c.LineSelector = 'Line2'
+                    c.LineSelector = "Line2"
                     c.V3_3Enable = False
-                    c.LineMode = 'Output'
+                    c.LineMode = "Output"
                 except Exception as e:
                     tqdm.write(f"Failed to disable 3V3 on {c.DeviceSerialNumber}: {e}")
 
@@ -627,9 +454,7 @@ if __name__ == "__main__":
     parser.add_argument("-m", "--max_frames", type=int, default=1000, help="Maximum frames to record")
     parser.add_argument("-n", "--num_cams", type=int, default=4, help="Number of input cameras")
     parser.add_argument("-r", "--reset", default=False, action="store_true", help="Reset cameras first")
-    parser.add_argument(
-        "-p", "--preview", default=False, action="store_true", help="Allow real-time visualization of video"
-    )
+    parser.add_argument("-p", "--preview", default=False, action="store_true", help="Allow real-time visualization of video")
     parser.add_argument(
         "-s",
         "--scaling",
