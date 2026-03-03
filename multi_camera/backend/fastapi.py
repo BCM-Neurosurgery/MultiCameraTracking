@@ -8,7 +8,7 @@ from websockets.exceptions import ConnectionClosedOK
 from datetime import date
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable, Awaitable
 from dataclasses import dataclass, field
 import base64
 import numpy as np
@@ -73,6 +73,7 @@ class GlobalState:
     current_session: Session = None
     recording_status: str = ""
     acquisition = None
+    event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 _global_state = GlobalState()
@@ -129,7 +130,37 @@ print([""] + [f for f in config_files if f.endswith(".yaml")])
 # print(socket.getfqdn())
 
 
-loop = asyncio.get_event_loop()
+def schedule_coroutine_threadsafe(coro_func: Callable[..., Awaitable], *args, **kwargs):
+    """
+    Schedule a coroutine from any thread onto the app's main event loop.
+    """
+    state: GlobalState = get_global_state()
+    loop = state.event_loop
+
+    if loop is None or loop.is_closed():
+        acquisition_logger.warning(
+            "Main event loop unavailable; dropping async callback %s",
+            getattr(coro_func, "__name__", repr(coro_func)),
+        )
+        return
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro_func(*args, **kwargs), loop)
+    except Exception as e:
+        acquisition_logger.error("Failed to schedule async callback: %s", e)
+        return
+
+    def _log_future_result(fut):
+        try:
+            exc = fut.exception()
+        except Exception as callback_error:
+            acquisition_logger.error("Failed to inspect scheduled coroutine result: %s", callback_error)
+            return
+
+        if exc is not None:
+            acquisition_logger.error("Scheduled coroutine failed", exc_info=exc)
+
+    future.add_done_callback(_log_future_result)
 
 
 def receive_status(status, progress=None):
@@ -148,12 +179,13 @@ def receive_status(status, progress=None):
         acquisition_logger.info(f"Status: {status}")
 
     # Put the status in the queue using asyncio from a synchronous function
-    loop.create_task(manager.broadcast(update))
+    schedule_coroutine_threadsafe(manager.broadcast, update)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state: GlobalState = get_global_state()
+    state.event_loop = asyncio.get_running_loop()
 
     # Perform startup tasks
     acquisition_logger.info("Starting acquisition system")
@@ -175,6 +207,7 @@ async def lifespan(app: FastAPI):
 
     # Perform shutdown tasks
     state.acquisition.close()
+    state.event_loop = None
     acquisition_logger.info("Acquisition system closed")
 
 
@@ -317,7 +350,7 @@ async def new_trial(data: NewTrialData, db: Session = Depends(db_dependency)):
     current_session = state.current_session
 
     def receive_frames_wrapper(frames):
-        loop.create_task(receive_frames(frames))
+        schedule_coroutine_threadsafe(receive_frames, frames)
 
     # run acquisition in a separate thread
     acquisition_coroutine = run_in_threadpool(
@@ -365,7 +398,7 @@ async def preview(data: PreviewData):
     max_frames = data.max_frames
 
     def receive_frames_wrapper(frames):
-        loop.create_task(receive_frames(frames))
+        schedule_coroutine_threadsafe(receive_frames, frames)
 
     # run acquisition in a separate thread
     import threading
