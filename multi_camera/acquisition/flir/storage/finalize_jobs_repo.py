@@ -67,6 +67,21 @@ class FinalizeJobsRepo:
         return conn
 
     @staticmethod
+    def reset_in_progress_jobs(conn: sqlite3.Connection):
+        """
+        Requeue jobs that were left in_progress after an unclean shutdown.
+        """
+        conn.execute(
+            """
+            UPDATE metadata_finalize_jobs
+            SET status='pending', updated_at=?
+            WHERE status='in_progress'
+            """,
+            (datetime.utcnow().isoformat(),),
+        )
+        conn.commit()
+
+    @staticmethod
     def claim_next_job(conn: sqlite3.Connection) -> FinalizeJob | None:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("""

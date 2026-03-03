@@ -92,6 +92,8 @@ def metadata_finalize_queue(
     repo = FinalizeJobsRepo(finalize_jobs_db)
     conn = repo.connect()
     try:
+        # Recover jobs that were claimed before a crash/restart.
+        repo.reset_in_progress_jobs(conn)
         while True:
             if stop_event.is_set() and repo.count_pending(conn) == 0:
                 break
