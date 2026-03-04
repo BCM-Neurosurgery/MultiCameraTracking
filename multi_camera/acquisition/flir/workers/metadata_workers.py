@@ -87,7 +87,6 @@ def metadata_finalize_queue(
     finalize_jobs_db: str,
     records_queue: Queue,
     stop_event: threading.Event,
-    worker_error_state: dict | None = None,
 ):
     """Consume durable SQLite finalize jobs and build legacy JSON outputs."""
     repo = FinalizeJobsRepo(finalize_jobs_db)
@@ -116,11 +115,8 @@ def metadata_finalize_queue(
                 repo.mark_done(conn, job.job_id)
             except Exception as exc:
                 err = str(exc)
-                msg = f"metadata finalize failure (job_id={job.job_id}): {err}"
-                tqdm.write(msg)
+                tqdm.write(f"metadata finalize failure (job_id={job.job_id}): {err}")
                 repo.mark_failed(conn, job.job_id, err)
-                set_worker_error(worker_error_state, msg)
-                break
     finally:
         conn.close()
 
@@ -169,11 +165,14 @@ def write_metadata_queue(
                 record = build_metadata_journal_record(frame)
                 out.write(json.dumps(record))
                 out.write("\n")
-            except Exception as exc:
-                msg = f"metadata journal write failure: {exc}"
+            except OSError as exc:
+                msg = f"metadata journal I/O failure: {exc}"
                 tqdm.write(msg)
                 set_worker_error(worker_error_state, msg)
                 break
+            except Exception as exc:
+                tqdm.write(f"metadata journal write skipped: {exc}")
+                continue
             finally:
                 json_queue.task_done()
     finally:

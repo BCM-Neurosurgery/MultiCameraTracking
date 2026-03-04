@@ -96,7 +96,6 @@ class RecorderService:
                 "finalize_jobs_db": self.recorder.finalize_jobs_db,
                 "records_queue": self.recorder.records_queue,
                 "stop_event": self.recorder.finalize_stop_event,
-                "worker_error_state": self.recorder.writer_error,
             },
         )
         handles.metadata_finalize_thread.start()
