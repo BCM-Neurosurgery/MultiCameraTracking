@@ -50,7 +50,7 @@ class RecorderService:
         self.recorder.finalize_jobs_db = get_finalize_jobs_db_path(finalize_base_dir)
         repo = FinalizeJobsRepo(self.recorder.finalize_jobs_db)
         repo.init_db()
-        self.recorder.finalize_stop_event.clear()
+        self.recorder.finalize_stop_event = threading.Event()
 
         conn = repo.connect()
         repo.reset_in_progress_jobs(conn)
@@ -60,7 +60,7 @@ class RecorderService:
         self.recorder.encode_jobs_db = get_encode_jobs_db_path(encode_base_dir)
         encode_repo = EncodeJobsRepo(self.recorder.encode_jobs_db)
         encode_repo.init_db()
-        self.recorder.encode_stop_event.clear()
+        self.recorder.encode_stop_event = threading.Event()
 
         # Reset stale in_progress jobs ONCE before any worker starts.
         # Workers must not call this themselves — with ENCODE_WORKERS > 1,
