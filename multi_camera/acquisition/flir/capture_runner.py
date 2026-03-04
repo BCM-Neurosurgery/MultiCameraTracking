@@ -117,7 +117,7 @@ def run_capture_loop(recorder, max_frames: int):
                     frame_metadata["frame_rates_requested"].append(camera.AcquisitionFrameRate)
 
                     try:
-                        im = im_ref.GetNDArray()
+                        im = im_ref.GetNDArray().copy()
                         if preview_this_frame:
                             real_time_images.append(im)
                     except Exception as exc:
