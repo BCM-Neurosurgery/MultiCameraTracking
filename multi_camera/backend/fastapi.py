@@ -343,7 +343,7 @@ async def get_session() -> Session:
 
 
 @api_router.post("/new_trial")
-async def new_trial(data: NewTrialData, db: Session = Depends(db_dependency)):
+async def new_trial(data: NewTrialData):
     recording_dir = data.recording_dir
     recording_filename = data.recording_filename
     comment = data.comment
@@ -375,25 +375,28 @@ async def new_trial(data: NewTrialData, db: Session = Depends(db_dependency)):
 
     def task_done_callback(task):
         print("Task completed.")
-        # You can retrieve the result (or exception) of the task using `result()` method.
         try:
             result = task.result()
             print(f"Task result: {result}")
 
-            # The result now contains a list of all the recordings after acquisition was started
-            for record in result:
-
-                add_recording(
-                    db,
-                    participant_name=current_session.participant_name,
-                    session_date=current_session.session_date,
-                    session_path=current_session.recording_path,
-                    filename=record["filename"],
-                    recording_timestamp=record["recording_timestamp"],
-                    config_file=config,
-                    comment=comment,
-                    timestamp_spread=record["timestamp_spread"],
-                )
+            # Open a fresh DB session — the injected one is already closed
+            # by the time this callback fires.
+            cb_db = get_db()
+            try:
+                for record in result:
+                    add_recording(
+                        cb_db,
+                        participant_name=current_session.participant_name,
+                        session_date=current_session.session_date,
+                        session_path=current_session.recording_path,
+                        filename=record["filename"],
+                        recording_timestamp=record["recording_timestamp"],
+                        config_file=config,
+                        comment=comment,
+                        timestamp_spread=record["timestamp_spread"],
+                    )
+            finally:
+                cb_db.close()
         except Exception as e:
             print(f"Task raised an exception: {e}")
 
