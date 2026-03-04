@@ -52,11 +52,22 @@ class RecorderService:
         repo.init_db()
         self.recorder.finalize_stop_event.clear()
 
+        conn = repo.connect()
+        repo.reset_in_progress_jobs(conn)
+        conn.close()
+
         encode_base_dir = self.recorder.video_path if getattr(self.recorder, "video_path", "") else "."
         self.recorder.encode_jobs_db = get_encode_jobs_db_path(encode_base_dir)
         encode_repo = EncodeJobsRepo(self.recorder.encode_jobs_db)
         encode_repo.init_db()
         self.recorder.encode_stop_event.clear()
+
+        # Reset stale in_progress jobs ONCE before any worker starts.
+        # Workers must not call this themselves — with ENCODE_WORKERS > 1,
+        # a late-starting worker would reset jobs already claimed by earlier workers.
+        conn = encode_repo.connect()
+        encode_repo.reset_in_progress_jobs(conn)
+        conn.close()
 
         num_encode_workers = int(os.environ.get("ENCODE_WORKERS", "1"))
         for idx in range(max(1, num_encode_workers)):

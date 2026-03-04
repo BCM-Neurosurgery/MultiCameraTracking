@@ -126,7 +126,8 @@ def encode_jobs_worker(
     keep_journal = str(os.environ.get("KEEP_JOURNAL_FILES", "0")).lower() in ("1", "true", "yes", "on")
 
     try:
-        repo.reset_in_progress_jobs(conn)
+        # reset_in_progress_jobs is called once by the main thread before
+        # workers are spawned (see recorder_service.start_workers).
         while True:
             if stop_event.is_set() and repo.count_pending(conn) == 0:
                 break
