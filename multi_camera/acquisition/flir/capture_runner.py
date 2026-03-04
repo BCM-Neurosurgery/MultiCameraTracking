@@ -53,6 +53,7 @@ def run_capture_loop(recorder, max_frames: int):
 
                 # Reset progress and segment filename after each segment.
                 if frame_idx % total_frames == 0:
+                    prog.close()
                     prog = tqdm(total=total_frames)
                     frame_idx = 0
 
