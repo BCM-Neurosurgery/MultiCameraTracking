@@ -7,6 +7,8 @@ import queue
 import threading
 from dataclasses import dataclass, field
 
+from tqdm import tqdm
+
 from multi_camera.acquisition.flir.pipeline.queues import build_recorder_queues
 from multi_camera.acquisition.flir.storage.encode_jobs_repo import EncodeJobsRepo, get_encode_jobs_db_path
 from multi_camera.acquisition.flir.storage.finalize_jobs_repo import FinalizeJobsRepo, get_finalize_jobs_db_path
@@ -117,13 +119,20 @@ class RecorderService:
         if self.recorder.video_base_file is None or not handles.writers_started:
             return
 
+        # Send sentinels to all image workers, then join threads (not queues).
+        # queue.join() deadlocks if a worker died before draining all items;
+        # thread.join(timeout) always returns.
         for serial, image_queue in self.recorder.image_queue_dict.items():
             image_queue.put(None)
-            image_queue.join()
 
+        for thread in handles.image_threads:
+            thread.join(timeout=10)
+            if thread.is_alive():
+                tqdm.write(f"WARNING: {thread.name} did not exit within timeout")
+
+        # Send sentinel to metadata writer, then join thread.
         if not self.recorder.writer_error["event"].is_set():
             self.recorder.json_queue.put(None)
-            self.recorder.json_queue.join()
         elif handles.metadata_writer_thread is not None and handles.metadata_writer_thread.is_alive():
             try:
                 self.recorder.json_queue.put(None, timeout=1.0)
@@ -132,6 +141,8 @@ class RecorderService:
 
         if handles.metadata_writer_thread is not None:
             handles.metadata_writer_thread.join(timeout=10)
+            if handles.metadata_writer_thread.is_alive():
+                tqdm.write(f"WARNING: {handles.metadata_writer_thread.name} did not exit within timeout")
 
         self.recorder.finalize_stop_event.set()
         if handles.metadata_finalize_thread is not None:
