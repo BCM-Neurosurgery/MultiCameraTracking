@@ -116,6 +116,7 @@ def write_journal_queue(
                 base_filename = frame["base_filename"]
                 if base_filename != current_base:
                     _flush_journal_to_encode_job(repo, journal, acquisition_fps)
+                    journal = None
                     current_base = base_filename
                     journal = SegmentJournalWriter(base_filename=current_base, serial=serial)
 
