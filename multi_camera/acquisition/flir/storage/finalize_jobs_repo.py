@@ -90,36 +90,43 @@ class FinalizeJobsRepo:
 
     @staticmethod
     def claim_next_job(conn: sqlite3.Connection) -> FinalizeJob | None:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            """
-            SELECT id, base_filename, recording_timestamp, config_metadata_json
-            FROM metadata_finalize_jobs
-            WHERE status='pending'
-            ORDER BY created_at ASC
-            LIMIT 1
-            """
-        ).fetchone()
-        if row is None:
-            conn.execute("COMMIT")
-            return None
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, base_filename, recording_timestamp, config_metadata_json
+                FROM metadata_finalize_jobs
+                WHERE status='pending'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return None
 
-        now = datetime.utcnow().isoformat()
-        conn.execute(
-            """
-            UPDATE metadata_finalize_jobs
-            SET status='in_progress', updated_at=?
-            WHERE id=?
-            """,
-            (now, row[0]),
-        )
-        conn.execute("COMMIT")
-        return FinalizeJob(
-            job_id=int(row[0]),
-            base_filename=row[1],
-            recording_timestamp=row[2],
-            config_metadata_json=row[3],
-        )
+            now = datetime.utcnow().isoformat()
+            conn.execute(
+                """
+                UPDATE metadata_finalize_jobs
+                SET status='in_progress', updated_at=?
+                WHERE id=?
+                """,
+                (now, row[0]),
+            )
+            conn.execute("COMMIT")
+            return FinalizeJob(
+                job_id=int(row[0]),
+                base_filename=row[1],
+                recording_timestamp=row[2],
+                config_metadata_json=row[3],
+            )
+        except sqlite3.OperationalError:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            return None
 
     @staticmethod
     def mark_done(conn: sqlite3.Connection, job_id: int):

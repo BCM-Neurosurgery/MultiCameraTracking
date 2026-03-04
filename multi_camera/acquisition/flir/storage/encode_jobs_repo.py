@@ -114,43 +114,50 @@ class EncodeJobsRepo:
 
     @staticmethod
     def claim_next_job(conn: sqlite3.Connection, worker_id: str) -> EncodeJob | None:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            """
-            SELECT id, segment_base, camera_serial, journal_path, output_mp4,
-                   width, height, fps, bayer_pattern, frame_count
-            FROM encode_jobs_v2
-            WHERE status='pending'
-            ORDER BY created_at ASC
-            LIMIT 1
-            """
-        ).fetchone()
-        if row is None:
-            conn.execute("COMMIT")
-            return None
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, segment_base, camera_serial, journal_path, output_mp4,
+                       width, height, fps, bayer_pattern, frame_count
+                FROM encode_jobs_v2
+                WHERE status='pending'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return None
 
-        now = datetime.utcnow().isoformat()
-        conn.execute(
-            """
-            UPDATE encode_jobs_v2
-            SET status='in_progress', worker_id=?, updated_at=?
-            WHERE id=?
-            """,
-            (worker_id, now, row[0]),
-        )
-        conn.execute("COMMIT")
-        return EncodeJob(
-            job_id=int(row[0]),
-            segment_base=row[1],
-            camera_serial=row[2],
-            journal_path=row[3],
-            output_mp4=row[4],
-            width=int(row[5]),
-            height=int(row[6]),
-            fps=float(row[7]),
-            bayer_pattern=row[8],
-            frame_count=int(row[9]),
-        )
+            now = datetime.utcnow().isoformat()
+            conn.execute(
+                """
+                UPDATE encode_jobs_v2
+                SET status='in_progress', worker_id=?, updated_at=?
+                WHERE id=?
+                """,
+                (worker_id, now, row[0]),
+            )
+            conn.execute("COMMIT")
+            return EncodeJob(
+                job_id=int(row[0]),
+                segment_base=row[1],
+                camera_serial=row[2],
+                journal_path=row[3],
+                output_mp4=row[4],
+                width=int(row[5]),
+                height=int(row[6]),
+                fps=float(row[7]),
+                bayer_pattern=row[8],
+                frame_count=int(row[9]),
+            )
+        except sqlite3.OperationalError:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            return None
 
     @staticmethod
     def mark_done(conn: sqlite3.Connection, job_id: int):
