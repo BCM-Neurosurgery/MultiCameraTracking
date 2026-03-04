@@ -23,6 +23,7 @@ class SegmentJournalWriter:
         self.serial = serial
         self.journal_path = f"{base_filename}.{serial}.journal"
         self._fh = open(self.journal_path, "wb", buffering=1024 * 1024)
+        self._closed = False
         self.width: int | None = None
         self.height: int | None = None
         self.bayer_pattern: str | None = None
@@ -44,6 +45,9 @@ class SegmentJournalWriter:
         self.frame_count += 1
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         self._fh.flush()
         os.fsync(self._fh.fileno())
         self._fh.close()
@@ -126,5 +130,8 @@ def write_journal_queue(
             finally:
                 image_queue.task_done()
     finally:
-        _flush_journal_to_encode_job(repo, journal, acquisition_fps)
+        try:
+            _flush_journal_to_encode_job(repo, journal, acquisition_fps)
+        except Exception as exc:
+            tqdm.write(f"flush error during cleanup ({serial}): {exc}")
         flush_done_event.set()
