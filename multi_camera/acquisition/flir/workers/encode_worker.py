@@ -138,7 +138,10 @@ def encode_jobs_worker(
                 continue
 
             try:
-                _encode_journal_to_mp4(job, keep_journal, stop_event=stop_event)
+                # Don't pass stop_event during drain — let the encode finish.
+                # The per-frame interrupt burns retries on clean shutdown.
+                drain_mode = stop_event.is_set()
+                _encode_journal_to_mp4(job, keep_journal, stop_event=None if drain_mode else stop_event)
                 repo.mark_done(conn, job.job_id)
             except Exception as exc:
                 err = str(exc)
