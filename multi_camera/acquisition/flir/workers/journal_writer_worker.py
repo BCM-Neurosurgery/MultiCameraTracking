@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import queue
 import struct
+import threading
 from queue import Queue
 
 import cv2
@@ -83,6 +85,7 @@ def write_journal_queue(
     acquisition_fps: float,
     encode_jobs_db: str,
     worker_error_state: dict,
+    stop_event: threading.Event,
 ):
     """
     Drain image queue, JPEG-encode raw Bayer frames into per-segment journal files,
@@ -94,7 +97,13 @@ def write_journal_queue(
 
     try:
         while True:
-            frame = image_queue.get()
+            try:
+                frame = image_queue.get(timeout=1.0)
+            except queue.Empty:
+                if stop_event.is_set():
+                    break
+                continue
+
             try:
                 if frame is None:
                     break

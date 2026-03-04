@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import queue
 from queue import Queue
 import threading
 import time
@@ -130,6 +131,7 @@ def write_metadata_queue(
     json_file: str,
     config_metadata: dict,
     worker_error_state: dict | None = None,
+    stop_event: threading.Event | None = None,
 ):
     """Write metadata queue to journal and enqueue segment finalization jobs."""
     current_filename = None
@@ -139,7 +141,13 @@ def write_metadata_queue(
 
     try:
         while True:
-            frame = json_queue.get()
+            try:
+                frame = json_queue.get(timeout=1.0)
+            except queue.Empty:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                continue
+
             try:
                 if frame is None:
                     break

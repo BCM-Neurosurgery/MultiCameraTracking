@@ -83,6 +83,7 @@ class RecorderService:
                     "acquisition_fps": camera.AcquisitionFrameRate,
                     "encode_jobs_db": self.recorder.encode_jobs_db,
                     "worker_error_state": self.recorder.writer_error,
+                    "stop_event": self.recorder.encode_stop_event,
                 },
             )
             thread.start()
@@ -109,6 +110,7 @@ class RecorderService:
                 "finalize_jobs_db": self.recorder.finalize_jobs_db,
                 "config_metadata": config_metadata,
                 "worker_error_state": self.recorder.writer_error,
+                "stop_event": self.recorder.finalize_stop_event,
             },
         )
         handles.metadata_writer_thread.start()
