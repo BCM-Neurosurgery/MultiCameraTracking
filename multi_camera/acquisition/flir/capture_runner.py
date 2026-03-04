@@ -24,7 +24,18 @@ def run_capture_loop(recorder, max_frames: int):
     image_timeout_ms = int(acquisition_settings.get("image_timeout_ms", 1000))
     max_consecutive_timeouts = int(acquisition_settings.get("max_consecutive_timeouts", 30))
     metadata_queue_timeout_s = float(acquisition_settings.get("metadata_queue_timeout_s", 2.0))
-    timeout_streaks = {camera.DeviceSerialNumber: 0 for camera in recorder.cams}
+    # Cache serials and static camera properties once to avoid per-frame
+    # PySpin property reads that throw SpinnakerException on disconnect.
+    serial_map = {id(camera): camera.DeviceSerialNumber for camera in recorder.cams}
+    camera_props = {}
+    for camera in recorder.cams:
+        sn = serial_map[id(camera)]
+        camera_props[sn] = {
+            "exposure_time": camera.ExposureTime,
+            "binning_fps": camera.BinningHorizontal * 30,
+            "frame_rate": camera.AcquisitionFrameRate,
+        }
+    timeout_streaks = {sn: 0 for sn in serial_map.values()}
 
     if recorder.camera_config["acquisition-type"] == "continuous":
         total_frames = recorder.camera_config["acquisition-settings"]["video_segment_len"]
@@ -63,7 +74,7 @@ def run_capture_loop(recorder, max_frames: int):
             frame_metadata["frame_rates_binning"] = []
 
             for camera in recorder.cams:
-                serial = camera.DeviceSerialNumber
+                serial = serial_map[id(camera)]
                 try:
                     im_ref = get_image_with_timeout(camera, image_timeout_ms)
                 except Exception as exc:
@@ -75,7 +86,11 @@ def run_capture_loop(recorder, max_frames: int):
                             raise RuntimeError(f"{serial}: exceeded max consecutive image timeouts " f"({max_consecutive_timeouts})") from exc
                         continue
 
-                    tqdm.write(f"{serial}: failed to get image ({exc})")
+                    timeout_streaks[serial] += 1
+                    if timeout_streaks[serial] == 1 or timeout_streaks[serial] % 10 == 0:
+                        tqdm.write(f"{serial}: failed to get image, streak {timeout_streaks[serial]} ({exc})")
+                    if timeout_streaks[serial] >= max_consecutive_timeouts:
+                        raise RuntimeError(f"{serial}: exceeded max consecutive errors " f"({max_consecutive_timeouts})") from exc
                     continue
 
                 timeout_streaks[serial] = 0
@@ -112,9 +127,10 @@ def run_capture_loop(recorder, max_frames: int):
                     frame_metadata["chunk_serial_data"].append(frame_count)
                     frame_metadata["serial_msg"].append(serial_msg)
                     frame_metadata["camera_serials"].append(serial)
-                    frame_metadata["exposure_times"].append(camera.ExposureTime)
-                    frame_metadata["frame_rates_binning"].append(camera.BinningHorizontal * 30)
-                    frame_metadata["frame_rates_requested"].append(camera.AcquisitionFrameRate)
+                    props = camera_props[serial]
+                    frame_metadata["exposure_times"].append(props["exposure_time"])
+                    frame_metadata["frame_rates_binning"].append(props["binning_fps"])
+                    frame_metadata["frame_rates_requested"].append(props["frame_rate"])
 
                     try:
                         im = im_ref.GetNDArray().copy()
