@@ -133,15 +133,20 @@ class FinalizeJobsRepo:
         )
         conn.commit()
 
+    MAX_RETRIES = 3
+
     @staticmethod
     def mark_failed(conn: sqlite3.Connection, job_id: int, err: str):
         conn.execute(
             """
             UPDATE metadata_finalize_jobs
-            SET status='failed', retries=retries+1, last_error=?, updated_at=?
-            WHERE id=?
+            SET status = CASE WHEN retries < ? THEN 'pending' ELSE 'failed' END,
+                retries = retries + 1,
+                last_error = ?,
+                updated_at = ?
+            WHERE id = ?
             """,
-            (err, datetime.utcnow().isoformat(), job_id),
+            (FinalizeJobsRepo.MAX_RETRIES, err, datetime.utcnow().isoformat(), job_id),
         )
         conn.commit()
 
