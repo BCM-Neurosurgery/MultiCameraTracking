@@ -16,50 +16,51 @@ def select_interface(interface, cameras):
 
     # Check the current interface to see if it has cameras
     interface_cams = interface.GetCameras()
-    # Get the number of cameras on the current interface
-    num_interface_cams = interface_cams.GetSize()
+    try:
+        # Get the number of cameras on the current interface
+        num_interface_cams = interface_cams.GetSize()
 
-    retval = None
+        retval = None
 
-    if num_interface_cams > 0:
-        # If camera list is passed, confirm all SNs are valid
-        if isinstance(cameras, list):
-            camera_id_list = []
+        if num_interface_cams > 0:
+            # If camera list is passed, confirm all SNs are valid
+            if isinstance(cameras, list):
+                camera_id_list = []
 
-            for c in cameras:
-                cam = interface_cams.GetBySerial(str(c))
-                if cam.IsValid():
-                    camera_id_list.append(str(c))
+                for c in cameras:
+                    cam = interface_cams.GetBySerial(str(c))
+                    if cam.IsValid():
+                        camera_id_list.append(str(c))
 
-                del cam  # must release handle
+                    del cam  # must release handle
 
-            # if the camera_ID_list does not contain any valid cameras
-            # based on the serial numbers present in the config file
-            # return None
-            if len(camera_id_list) > 0:
-                # Find any invalid IDs in the config
-                invalid_ids = [c for c in cameras if str(c) not in camera_id_list]
+                # if the camera_ID_list does not contain any valid cameras
+                # based on the serial numbers present in the config file
+                # return None
+                if len(camera_id_list) > 0:
+                    # Find any invalid IDs in the config
+                    invalid_ids = [c for c in cameras if str(c) not in camera_id_list]
 
-                if invalid_ids:
-                    print(f"The following camera ID(s) from are missing: {invalid_ids} but continuing")
+                    if invalid_ids:
+                        print(f"The following camera ID(s) from are missing: {invalid_ids} but continuing")
 
-                retval = camera_id_list
+                    retval = camera_id_list
 
-        # If num_cams is passed, confirm it is less than or equal to
-        # the size of interface_cams and return the correct num_cams
-        if isinstance(cameras, int):
-            # if num_cams is larger than the # cameras on current interface,
-            # raise an error
-            assert cameras <= num_interface_cams, f"num_cams={cameras} but the current interface only has {num_interface_cams} cameras."
+            # If num_cams is passed, confirm it is less than or equal to
+            # the size of interface_cams and return the correct num_cams
+            if isinstance(cameras, int):
+                # if num_cams is larger than the # cameras on current interface,
+                # raise an error
+                assert cameras <= num_interface_cams, f"num_cams={cameras} but the current interface only has {num_interface_cams} cameras."
 
-            # Otherwise, set num_cams to the # of available cameras
-            num_cams = cameras
-            print(f"No config file passed. Selecting the first {num_cams} cameras in the list.")
+                # Otherwise, set num_cams to the # of available cameras
+                num_cams = cameras
+                print(f"No config file passed. Selecting the first {num_cams} cameras in the list.")
 
-            retval = num_cams
-
-    # need to make sure we release this handle
-    interface_cams.Clear()
+                retval = num_cams
+    finally:
+        # Always release the camera list handle, even if an assertion fires.
+        interface_cams.Clear()
 
     # If there are no cameras on the interface, return None
     return retval

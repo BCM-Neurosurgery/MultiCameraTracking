@@ -118,35 +118,35 @@ class FlirRecorder:
         self.config_file = config_file
 
         iface_list = self.system.GetInterfaces()
+        try:
+            if config_file:
+                with open(config_file, "r") as file:
+                    self.camera_config = yaml.safe_load(file)
 
-        if config_file:
-            with open(config_file, "r") as file:
-                self.camera_config = yaml.safe_load(file)
+                # Updating interface_cameras if a config file is passed
+                # with the camera IDs passed
+                requested_cameras = list(self.camera_config["camera-info"].keys())
+            else:
+                assert num_cams is not None, "Must provide number of cameras if no config file is provided"
+                requested_cameras = num_cams
+                self.camera_config = {}
 
-            # Updating interface_cameras if a config file is passed
-            # with the camera IDs passed
-            requested_cameras = list(self.camera_config["camera-info"].keys())
-        else:
-            assert num_cams is not None, "Must provide number of cameras if no config file is provided"
-            requested_cameras = num_cams
-            self.camera_config = {}
+            print(f"Requested cameras: {requested_cameras}")
 
-        print(f"Requested cameras: {requested_cameras}")
+            # Identify the interface we are going to send a command for synchronous recording
+            iface = None
+            for i, current_iface in enumerate(iface_list):
+                selected_cams = camera_select_interface(current_iface, requested_cameras)
 
-        # Identify the interface we are going to send a command for synchronous recording
-        iface = None
-        for i, current_iface in enumerate(iface_list):
-            selected_cams = camera_select_interface(current_iface, requested_cameras)
+                # If the value returned from select_interface is not None,
+                # select the current interface
+                if selected_cams is not None:
+                    # Break out of the loop after finding the interface and cameras
+                    break
 
-            # If the value returned from select_interface is not None,
-            # select the current interface
-            if selected_cams is not None:
-                # Break out of the loop after finding the interface and cameras
-                break
-
-        print(f"Using interface {i} with {selected_cams} cameras. In use: {current_iface.IsInUse()}")
-
-        iface_list.Clear()
+            print(f"Using interface {i} with {selected_cams} cameras. In use: {current_iface.IsInUse()}")
+        finally:
+            iface_list.Clear()
 
         # Confirm that cameras were found on an interface
         assert current_iface is not None, "Unable to find valid interface."
@@ -197,8 +197,18 @@ class FlirRecorder:
             "chunk_data": self.camera_config["acquisition-settings"]["chunk_data"],
         }
 
+        def _init_or_close(cam):
+            try:
+                camera_init_camera(cam, **config_params)
+            except Exception:
+                try:
+                    cam.close()
+                except Exception:
+                    pass
+                raise
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.cams)) as executor:
-            list(executor.map(lambda c: camera_init_camera(c, **config_params), self.cams))
+            list(executor.map(_init_or_close, self.cams))
 
         await self.synchronize_cameras()
 
