@@ -47,25 +47,6 @@ def run_capture_loop(recorder, max_frames: int):
                 print("Stopping recording")
                 break
 
-            if recorder.camera_config["acquisition-type"] == "continuous":
-                recorder.set_progress(frame_idx / total_frames)
-                prog.update(1)
-
-                # Reset progress and segment filename after each segment.
-                if frame_idx % total_frames == 0:
-                    prog.close()
-                    prog = tqdm(total=total_frames)
-                    frame_idx = 0
-
-                    if recorder.video_base_file is not None:
-                        now = datetime.now()
-                        time_str = now.strftime("%Y%m%d_%H%M%S")
-                        recorder.video_base_name = "_".join([recorder.video_root, time_str])
-                        recorder.video_base_file = os.path.join(recorder.video_path, recorder.video_base_name)
-            else:
-                recorder.set_progress(frame_idx / max_frames)
-                prog.update(1)
-
             # for each camera, get current frame and dispatch it
             preview_this_frame = recorder.preview_callback is not None and (frame_idx % 10 == 0)
             real_time_images = [] if preview_this_frame else None
@@ -170,7 +151,27 @@ def run_capture_loop(recorder, max_frames: int):
             if preview_this_frame:
                 recorder.preview_callback(real_time_images)
 
-            frame_idx += 1
+            # Increment after frame is fully dispatched.
+            if recorder.camera_config["acquisition-type"] == "continuous":
+                frame_idx += 1
+                recorder.set_progress(frame_idx / total_frames)
+                prog.update(1)
+
+                # Reset progress and segment filename after each segment.
+                if frame_idx >= total_frames:
+                    prog.close()
+                    prog = tqdm(total=total_frames)
+                    frame_idx = 0
+
+                    if recorder.video_base_file is not None:
+                        now = datetime.now()
+                        time_str = now.strftime("%Y%m%d_%H%M%S")
+                        recorder.video_base_name = "_".join([recorder.video_root, time_str])
+                        recorder.video_base_file = os.path.join(recorder.video_path, recorder.video_base_name)
+            else:
+                frame_idx += 1
+                recorder.set_progress(frame_idx / max_frames)
+                prog.update(1)
     finally:
         try:
             prog.close()
