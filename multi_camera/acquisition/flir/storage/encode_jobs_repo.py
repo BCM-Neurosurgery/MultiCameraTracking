@@ -33,6 +33,7 @@ class EncodeJobsRepo:
     def init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS encode_jobs_v2 (
@@ -77,6 +78,7 @@ class EncodeJobsRepo:
     ):
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(
                 """
                 INSERT INTO encode_jobs_v2 (
@@ -92,6 +94,7 @@ class EncodeJobsRepo:
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     @staticmethod

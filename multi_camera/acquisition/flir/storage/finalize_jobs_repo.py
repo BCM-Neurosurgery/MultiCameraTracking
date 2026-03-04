@@ -28,6 +28,7 @@ class FinalizeJobsRepo:
     def init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS metadata_finalize_jobs (
@@ -55,6 +56,7 @@ class FinalizeJobsRepo:
         now = datetime.utcnow().isoformat()
         rec_ts = recording_timestamp.isoformat() if isinstance(recording_timestamp, datetime) else str(recording_timestamp)
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(
                 """
                 INSERT INTO metadata_finalize_jobs (
@@ -68,6 +70,7 @@ class FinalizeJobsRepo:
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     @staticmethod
