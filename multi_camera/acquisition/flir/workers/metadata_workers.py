@@ -128,6 +128,7 @@ def write_metadata_queue(
     config_metadata: dict,
     worker_error_state: dict | None = None,
     stop_event: threading.Event | None = None,
+    flush_done_event: threading.Event | None = None,
 ):
     """Write metadata queue to journal and enqueue segment finalization jobs."""
     current_filename = None
@@ -183,3 +184,5 @@ def write_metadata_queue(
                 recording_timestamp=current_first_local_time,
                 config_metadata=config_metadata,
             )
+        if flush_done_event is not None:
+            flush_done_event.set()

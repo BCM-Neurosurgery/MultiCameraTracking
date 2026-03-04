@@ -86,6 +86,7 @@ def write_journal_queue(
     encode_jobs_db: str,
     worker_error_state: dict,
     stop_event: threading.Event,
+    flush_done_event: threading.Event,
 ):
     """
     Drain image queue, JPEG-encode raw Bayer frames into per-segment journal files,
@@ -126,3 +127,4 @@ def write_journal_queue(
                 image_queue.task_done()
     finally:
         _flush_journal_to_encode_job(repo, journal, acquisition_fps)
+        flush_done_event.set()

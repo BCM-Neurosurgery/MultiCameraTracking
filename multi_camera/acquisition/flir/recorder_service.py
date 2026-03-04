@@ -20,8 +20,10 @@ from multi_camera.acquisition.flir.workers.metadata_workers import metadata_fina
 @dataclass
 class WorkerHandles:
     image_threads: list[threading.Thread] = field(default_factory=list)
+    image_flush_events: list[threading.Event] = field(default_factory=list)
     encode_threads: list[threading.Thread] = field(default_factory=list)
     metadata_writer_thread: threading.Thread | None = None
+    metadata_flush_event: threading.Event | None = None
     metadata_finalize_thread: threading.Thread | None = None
     writers_started: bool = False
 
@@ -73,6 +75,7 @@ class RecorderService:
 
         for camera in self.recorder.cams:
             serial = camera.DeviceSerialNumber
+            flush_event = threading.Event()
             thread = threading.Thread(
                 name=f"write_image_{serial}",
                 target=write_journal_queue,
@@ -84,10 +87,12 @@ class RecorderService:
                     "encode_jobs_db": self.recorder.encode_jobs_db,
                     "worker_error_state": self.recorder.writer_error,
                     "stop_event": self.recorder.encode_stop_event,
+                    "flush_done_event": flush_event,
                 },
             )
             thread.start()
             handles.image_threads.append(thread)
+            handles.image_flush_events.append(flush_event)
 
         handles.metadata_finalize_thread = threading.Thread(
             name="write_metadata_finalize",
@@ -100,6 +105,7 @@ class RecorderService:
         )
         handles.metadata_finalize_thread.start()
 
+        handles.metadata_flush_event = threading.Event()
         handles.metadata_writer_thread = threading.Thread(
             name="write_metadata",
             target=write_metadata_queue,
@@ -110,6 +116,7 @@ class RecorderService:
                 "config_metadata": config_metadata,
                 "worker_error_state": self.recorder.writer_error,
                 "stop_event": self.recorder.finalize_stop_event,
+                "flush_done_event": handles.metadata_flush_event,
             },
         )
         handles.metadata_writer_thread.start()
@@ -120,18 +127,29 @@ class RecorderService:
         if self.recorder.video_base_file is None or not handles.writers_started:
             return
 
-        # Send sentinels to all image workers, then join threads (not queues).
-        # queue.join() deadlocks if a worker died before draining all items;
-        # thread.join(timeout) always returns.
+        # --- Phase 1: stop journal writers and wait for final flush ---
+        # Send sentinels so writers exit their loop and flush the last segment.
         for serial, image_queue in self.recorder.image_queue_dict.items():
             image_queue.put(None)
 
+        # Wait for each writer to finish flushing (enqueue its last encode job).
+        # flush_done_event is set in the writer's finally block, after the last
+        # encode job is in SQLite. The 30s timeout is a safety net only.
+        for event in handles.image_flush_events:
+            event.wait(timeout=30)
+
         for thread in handles.image_threads:
-            thread.join(timeout=10)
+            thread.join(timeout=5)
             if thread.is_alive():
                 tqdm.write(f"WARNING: {thread.name} did not exit within timeout")
 
-        # Send sentinel to metadata writer, then join thread.
+        # --- Phase 2: tell encode workers to drain and exit ---
+        # Safe: all encode jobs are now in SQLite.
+        self.recorder.encode_stop_event.set()
+        for thread in handles.encode_threads:
+            thread.join(timeout=30)
+
+        # --- Phase 3: stop metadata writer and wait for final flush ---
         if not self.recorder.writer_error["event"].is_set():
             self.recorder.json_queue.put(None)
         elif handles.metadata_writer_thread is not None and handles.metadata_writer_thread.is_alive():
@@ -140,18 +158,19 @@ class RecorderService:
             except queue.Full:
                 pass
 
+        if handles.metadata_flush_event is not None:
+            handles.metadata_flush_event.wait(timeout=30)
+
         if handles.metadata_writer_thread is not None:
-            handles.metadata_writer_thread.join(timeout=10)
+            handles.metadata_writer_thread.join(timeout=5)
             if handles.metadata_writer_thread.is_alive():
                 tqdm.write(f"WARNING: {handles.metadata_writer_thread.name} did not exit within timeout")
 
+        # --- Phase 4: tell finalize worker to drain and exit ---
+        # Safe: all finalize jobs are now in SQLite.
         self.recorder.finalize_stop_event.set()
         if handles.metadata_finalize_thread is not None:
             handles.metadata_finalize_thread.join(timeout=20)
-
-        self.recorder.encode_stop_event.set()
-        for thread in handles.encode_threads:
-            thread.join(timeout=30)
 
     def collect_records(self) -> list[dict]:
         records = []
