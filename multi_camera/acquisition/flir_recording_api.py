@@ -63,6 +63,7 @@ class FlirRecorder:
         self.writer_error = {"event": threading.Event(), "message": None}
         self.config_file = None
         self.iface = None
+        self._acquiring = False
         self.status_callback = status_callback
         self.set_status("Uninitialized")
 
@@ -292,6 +293,10 @@ class FlirRecorder:
         4. Capture frames and enqueue image/metadata
         5. Stop workers/cameras and collect segment records
         """
+        if self._acquiring:
+            raise RuntimeError("start_acquisition called while already acquiring")
+        self._acquiring = True
+
         self._prepare_recording_target(recording_path=recording_path, preview_callback=preview_callback)
         config_metadata = self._build_config_metadata()
         recorder_service = RecorderService(self)
@@ -315,6 +320,7 @@ class FlirRecorder:
 
         finally:
             # Phase 4: orderly shutdown.
+            self._acquiring = False
             self._shutdown_preview()
             camera_stop_cameras(self.cams, getattr(self, "gpio_settings", {}), cameras_started)
             if worker_handles is not None and worker_handles.writers_started:
