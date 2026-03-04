@@ -145,9 +145,13 @@ class RecorderService:
 
         # --- Phase 2: tell encode workers to drain and exit ---
         # Safe: all encode jobs are now in SQLite.
+        # stop_event is also checked per-frame inside _encode_journal_to_mp4,
+        # so an in-flight ffmpeg encode will be interrupted within ~1 frame.
         self.recorder.encode_stop_event.set()
         for thread in handles.encode_threads:
-            thread.join(timeout=30)
+            thread.join(timeout=60)
+            if thread.is_alive():
+                tqdm.write(f"WARNING: {thread.name} did not exit within timeout")
 
         # --- Phase 3: stop metadata writer and wait for final flush ---
         if not self.recorder.writer_error["event"].is_set():
@@ -171,6 +175,8 @@ class RecorderService:
         self.recorder.finalize_stop_event.set()
         if handles.metadata_finalize_thread is not None:
             handles.metadata_finalize_thread.join(timeout=20)
+            if handles.metadata_finalize_thread.is_alive():
+                tqdm.write(f"WARNING: {handles.metadata_finalize_thread.name} did not exit within timeout")
 
     def collect_records(self) -> list[dict]:
         records = []

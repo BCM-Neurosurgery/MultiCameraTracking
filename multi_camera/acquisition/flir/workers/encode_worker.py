@@ -41,7 +41,7 @@ def _iter_journal_frames(journal_path: str):
             yield data
 
 
-def _encode_journal_to_mp4(job, keep_journal: bool):
+def _encode_journal_to_mp4(job, keep_journal: bool, stop_event: threading.Event | None = None):
     """Decode journal JPEGs, debayer, and pipe RGB frames to ffmpeg for H.264 encoding."""
     cvt_code = _BAYER_CVTCOLOR.get(job.bayer_pattern)
 
@@ -75,6 +75,10 @@ def _encode_journal_to_mp4(job, keep_journal: bool):
     decoded_count = 0
     try:
         for jpeg_data in _iter_journal_frames(job.journal_path):
+            if stop_event is not None and stop_event.is_set():
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("encode interrupted by shutdown")
             bayer = cv2.imdecode(np.frombuffer(jpeg_data, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
             if bayer is None:
                 raise RuntimeError(f"imdecode failed at frame {decoded_count}")
@@ -133,7 +137,7 @@ def encode_jobs_worker(
                 continue
 
             try:
-                _encode_journal_to_mp4(job, keep_journal)
+                _encode_journal_to_mp4(job, keep_journal, stop_event=stop_event)
                 repo.mark_done(conn, job.job_id)
             except Exception as exc:
                 err = str(exc)
