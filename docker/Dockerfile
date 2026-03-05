@@ -45,7 +45,7 @@ RUN npm install
 COPY react_frontend/ ./
 
 ### Additional utilities
-RUN apt-get install -y net-tools
+RUN apt-get install -y net-tools ffmpeg
 
 ### Install EasyMocap
 WORKDIR /
