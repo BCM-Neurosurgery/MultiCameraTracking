@@ -89,14 +89,31 @@ def _encode_journal_to_mp4(job, keep_journal: bool, stop_event: threading.Event 
                 rgb = cv2.cvtColor(bayer, cv2.COLOR_GRAY2RGB)
             proc.stdin.write(rgb.tobytes())
             decoded_count += 1
-        proc.stdin.close()
-        _, stderr = proc.communicate()
-    except BrokenPipeError:
-        _, stderr = proc.communicate()
+    except (BrokenPipeError, ValueError):
+        # ffmpeg exited early — ValueError ("flush of closed file") surfaces
+        # when Python's buffered IO marks the pipe as closed after a prior EPIPE.
+        pass
     except Exception:
-        proc.kill()
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
         proc.wait()
         raise
+
+    # Close stdin and wait for ffmpeg to finish.
+    # Avoid proc.communicate() — on Python 3.12 it tries to flush stdin
+    # even after close(), raising ValueError ("flush of closed file").
+    try:
+        proc.stdin.close()
+    except (BrokenPipeError, ValueError, OSError):
+        pass
+    stderr = proc.stderr.read()
+    proc.wait()
 
     if proc.returncode != 0:
         stderr_text = (stderr or b"").decode(errors="replace").strip()
