@@ -156,8 +156,7 @@ class RecorderService:
 
         # --- Phase 2: tell encode workers to drain and exit ---
         # Safe: all encode jobs are now in SQLite.
-        # stop_event is also checked per-frame inside _encode_journal_to_mp4,
-        # so an in-flight ffmpeg encode will be interrupted within ~1 frame.
+        # In-flight encodes run to completion before the worker exits.
         self.recorder.encode_stop_event.set()
         for thread in handles.encode_threads:
             thread.join(timeout=60)
