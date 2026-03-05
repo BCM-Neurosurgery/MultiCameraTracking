@@ -34,8 +34,7 @@ class EncodeJobsRepo:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS encode_jobs_v2 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     segment_base TEXT NOT NULL,
@@ -54,14 +53,11 @@ class EncodeJobsRepo:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_encode_jobs_v2_status_created
                 ON encode_jobs_v2(status, created_at)
-                """
-            )
+                """)
             conn.commit()
 
     def enqueue_job(
@@ -116,16 +112,14 @@ class EncodeJobsRepo:
     def claim_next_job(conn: sqlite3.Connection, worker_id: str) -> EncodeJob | None:
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT id, segment_base, camera_serial, journal_path, output_mp4,
                        width, height, fps, bayer_pattern, frame_count
                 FROM encode_jobs_v2
                 WHERE status='pending'
                 ORDER BY created_at ASC
                 LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
             if row is None:
                 conn.execute("COMMIT")
                 return None
@@ -190,11 +184,9 @@ class EncodeJobsRepo:
 
     @staticmethod
     def count_pending(conn: sqlite3.Connection) -> int:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT COUNT(*)
             FROM encode_jobs_v2
             WHERE status IN ('pending', 'in_progress')
-            """
-        ).fetchone()
+            """).fetchone()
         return int(row[0]) if row is not None else 0
