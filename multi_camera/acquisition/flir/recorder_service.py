@@ -69,7 +69,7 @@ class RecorderService:
         encode_repo.reset_in_progress_jobs(conn)
         conn.close()
 
-        num_encode_workers = int(os.environ.get("ENCODE_WORKERS", "1"))
+        num_encode_workers = int(os.environ.get("ENCODE_WORKERS", "3"))
         for idx in range(max(1, num_encode_workers)):
             worker_id = f"encode_worker_{idx}"
             thread = threading.Thread(

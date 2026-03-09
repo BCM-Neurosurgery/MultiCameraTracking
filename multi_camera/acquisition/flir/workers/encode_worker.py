@@ -14,12 +14,14 @@ from tqdm import tqdm
 
 from multi_camera.acquisition.flir.storage.encode_jobs_repo import EncodeJobsRepo
 
-# Map bayer_pattern strings to OpenCV demosaic codes
-_BAYER_CVTCOLOR = {
-    "BayerRG8": cv2.COLOR_BAYER_RG2RGB,
-    "BayerBG8": cv2.COLOR_BAYER_BG2RGB,
-    "BayerGR8": cv2.COLOR_BAYER_GR2RGB,
-    "BayerGB8": cv2.COLOR_BAYER_GB2RGB,
+# Map bayer_pattern strings to ffmpeg pixel format names.
+# ffmpeg handles debayering internally, avoiding Python-side cv2.cvtColor
+# and reducing pipe data from 6.6 MB (RGB) to 2.2 MB (Bayer) per frame.
+_BAYER_FFMPEG_PIXFMT = {
+    "BayerRG8": "bayer_rggb8",
+    "BayerBG8": "bayer_bggr8",
+    "BayerGR8": "bayer_grbg8",
+    "BayerGB8": "bayer_gbrg8",
 }
 
 
@@ -42,8 +44,9 @@ def _iter_journal_frames(journal_path: str):
 
 
 def _encode_journal_to_mp4(job, keep_journal: bool):
-    """Decode journal JPEGs, debayer, and pipe RGB frames to ffmpeg for H.264 encoding."""
-    cvt_code = _BAYER_CVTCOLOR.get(job.bayer_pattern)
+    """Decode journal JPEGs and pipe raw Bayer frames to ffmpeg for demosaic + H.264 encoding."""
+    is_bayer = job.bayer_pattern in _BAYER_FFMPEG_PIXFMT
+    pix_fmt = _BAYER_FFMPEG_PIXFMT.get(job.bayer_pattern, "rgb24")
 
     tmp_out = job.output_mp4 + ".tmp.mp4"
     cmd = [
@@ -55,7 +58,7 @@ def _encode_journal_to_mp4(job, keep_journal: bool):
         "-f",
         "rawvideo",
         "-pixel_format",
-        "rgb24",
+        pix_fmt,
         "-video_size",
         f"{job.width}x{job.height}",
         "-framerate",
@@ -75,15 +78,13 @@ def _encode_journal_to_mp4(job, keep_journal: bool):
     decoded_count = 0
     try:
         for jpeg_data in _iter_journal_frames(job.journal_path):
-            bayer = cv2.imdecode(np.frombuffer(jpeg_data, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-            if bayer is None:
+            frame = cv2.imdecode(np.frombuffer(jpeg_data, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            if frame is None:
                 raise RuntimeError(f"imdecode failed at frame {decoded_count}")
-            if cvt_code is not None:
-                rgb = cv2.cvtColor(bayer, cvt_code)
-            else:
-                # Non-Bayer single-channel: replicate to 3-channel
-                rgb = cv2.cvtColor(bayer, cv2.COLOR_GRAY2RGB)
-            proc.stdin.write(rgb.tobytes())
+            if not is_bayer:
+                # Non-Bayer single-channel: replicate to 3-channel for gray pix_fmt fallback
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            proc.stdin.write(frame.tobytes())
             decoded_count += 1
     except (BrokenPipeError, ValueError):
         # ffmpeg exited early — ValueError ("flush of closed file") surfaces
