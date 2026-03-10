@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 
-from tqdm import tqdm
+log = logging.getLogger("flir_pipeline")
 
 
 def start_camera_streams(cams):
@@ -20,24 +21,28 @@ def start_camera_streams(cams):
 
 def arm_cameras_and_issue_trigger(cams, iface, gpio_settings: dict):
     """Apply runtime GPIO setup and issue synchronized action trigger."""
-    print("Acquisition, Resulting, Exposure, DeviceLinkThroughputLimit:")
+    log.info("Acquisition, Resulting, Exposure, DeviceLinkThroughputLimit:")
     for camera in cams:
-        print(
-            f"{camera.DeviceSerialNumber}: {camera.AcquisitionFrameRate}, "
-            f"{camera.AcquisitionResultingFrameRate}, {camera.ExposureTime}, "
-            f"{camera.DeviceLinkThroughputLimit} "
+        log.info(
+            "%s: %s, %s, %s, %s",
+            camera.DeviceSerialNumber,
+            camera.AcquisitionFrameRate,
+            camera.AcquisitionResultingFrameRate,
+            camera.ExposureTime,
+            camera.DeviceLinkThroughputLimit,
         )
-        print(f"Frame Size: {camera.Width} {camera.Height}")
+        log.info("Frame Size: %s %s", camera.Width, camera.Height)
 
         if gpio_settings.get("line2") == "3V3_Enable":
             camera.LineSelector = "Line2"
             camera.LineMode = "Input"
             camera.V3_3Enable = True
         if gpio_settings.get("line3") == "SerialOn":
-            print(camera.SerialReceiveQueueCurrentCharacterCount)
-            print(camera.SerialReceiveQueueMaxCharacterCount)
+            log.debug(
+                "SerialReceiveQueue current=%s max=%s", camera.SerialReceiveQueueCurrentCharacterCount, camera.SerialReceiveQueueMaxCharacterCount
+            )
             camera.SerialReceiveQueueClear()
-            print(camera.SerialReceiveQueueCurrentCharacterCount)
+            log.debug("SerialReceiveQueue after clear=%s", camera.SerialReceiveQueueCurrentCharacterCount)
 
     # Schedule action command ~250ms in the future.
     cams[0].TimestampLatch()
@@ -59,10 +64,10 @@ def stop_cameras(cams, gpio_settings: dict, cameras_started: bool):
                 camera.V3_3Enable = False
                 camera.LineMode = "Output"
             except Exception as exc:
-                tqdm.write(f"Failed to disable 3V3 on {camera.DeviceSerialNumber}: {exc}")
+                log.warning("Failed to disable 3V3 on %s: %s", camera.DeviceSerialNumber, exc)
 
         if cameras_started:
             try:
                 camera.stop()
             except Exception as exc:
-                tqdm.write(f"Failed to stop camera {camera.DeviceSerialNumber}: {exc}")
+                log.warning("Failed to stop camera %s: %s", camera.DeviceSerialNumber, exc)

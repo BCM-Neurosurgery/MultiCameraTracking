@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 import queue
 from queue import Queue
 import threading
 import time
 
-from tqdm import tqdm
+log = logging.getLogger("flir_pipeline")
 
 from multi_camera.acquisition.flir.pipeline.messages import MetadataPacket, SegmentRecord
 from multi_camera.acquisition.flir.pipeline.queues import set_worker_error
@@ -115,7 +116,7 @@ def metadata_finalize_queue(
                 repo.mark_done(conn, job.job_id)
             except Exception as exc:
                 err = str(exc)
-                tqdm.write(f"metadata finalize failure (job_id={job.job_id}): {err}")
+                log.error("metadata finalize failure (job_id=%s): %s", job.job_id, err)
                 repo.mark_failed(conn, job.job_id, err)
     finally:
         conn.close()
@@ -168,11 +169,11 @@ def write_metadata_queue(
                 out.write("\n")
             except OSError as exc:
                 msg = f"metadata journal I/O failure: {exc}"
-                tqdm.write(msg)
+                log.error(msg)
                 set_worker_error(worker_error_state, msg)
                 break
             except Exception as exc:
-                tqdm.write(f"metadata journal write skipped: {exc}")
+                log.warning("metadata journal write skipped: %s", exc)
                 continue
             finally:
                 json_queue.task_done()

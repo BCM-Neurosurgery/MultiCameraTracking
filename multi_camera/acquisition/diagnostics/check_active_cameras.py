@@ -11,8 +11,7 @@ system = PySpin.System.GetInstance()
 # Get camera list
 cam_list = simple_pyspin.list_cameras()
 
-availability = {"in_use": [],
-                "available": []}
+availability = {"in_use": [], "available": []}
 
 for i, c in enumerate(cam_list):
     n = c.GetTLDeviceNodeMap()

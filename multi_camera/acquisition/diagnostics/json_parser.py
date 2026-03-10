@@ -6,9 +6,10 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import StrMethodFormatter
 from pathlib import Path
 
+
 def parse_json(data_path):
     # get list of each json file in data path
-    json_list = [file for file in os.listdir(data_path) if file.endswith('.json')]
+    json_list = [file for file in os.listdir(data_path) if file.endswith(".json")]
 
     # fig_name = data_path.split('\\')[-2]
 
@@ -23,11 +24,11 @@ def parse_json(data_path):
     # load each json file
     for json_file in json_list:
         print(f"Processing {json_file}")
-        current_json = open(data_path+json_file)
+        current_json = open(data_path + json_file)
         current_data = json.load(current_json)
 
         camera_ids = current_data["serials"]
-        id_map = {id:i for i,id in enumerate(camera_ids)}
+        id_map = {id: i for i, id in enumerate(camera_ids)}
         # print(id_map)
         frame_id = np.array(current_data["frame_id"])
         serial_data = np.array(current_data["chunk_serial_data"])
@@ -37,10 +38,10 @@ def parse_json(data_path):
         spread = np.max(dt, axis=1) - np.min(dt, axis=1)
         spread1 = np.max(dt, axis=0) - np.min(dt, axis=0)
         # print(dt)
-        ts_df = pd.DataFrame(ts / 1e9,columns=camera_ids)
-        dt_df = pd.DataFrame(dt,columns=camera_ids)
+        ts_df = pd.DataFrame(ts / 1e9, columns=camera_ids)
+        dt_df = pd.DataFrame(dt, columns=camera_ids)
 
-        delta_from_main = pd.DataFrame((ts[:, 1:] - ts[:, :1]) / 1e9, columns=camera_ids[1:]) * 1000.
+        delta_from_main = pd.DataFrame((ts[:, 1:] - ts[:, :1]) / 1e9, columns=camera_ids[1:]) * 1000.0
         print(delta_from_main.shape)
         delta_from_main_all.extend(delta_from_main.values)
         print(len(delta_from_main_all))
@@ -58,12 +59,12 @@ def parse_json(data_path):
         frame_id_delta_all.extend(frame_id_delta.values)
         serial_data_delta_all.extend(serial_data_delta.values)
 
-        #cur_max = dt_df.idxmax(axis=1)
-        #cur_min = dt_df.idxmin(axis=1)
-        #max_min_df['max'] = cur_max
-        #max_min_df['min'] = cur_min
-        #max_min_df.replace({"max": id_map}, inplace=True)
-        #max_min_df.replace({"min": id_map}, inplace=True)
+        # cur_max = dt_df.idxmax(axis=1)
+        # cur_min = dt_df.idxmin(axis=1)
+        # max_min_df['max'] = cur_max
+        # max_min_df['min'] = cur_min
+        # max_min_df.replace({"max": id_map}, inplace=True)
+        # max_min_df.replace({"min": id_map}, inplace=True)
         # print(ts_df)
         # print(dt_df)
         # print(max_min_df)
@@ -89,17 +90,17 @@ def parse_json(data_path):
         # plt.show()
 
         # print(f"For {json_file}: Timestamps showed a maximum spread of {np.max(spread) * 1000} ms")
-    pd.DataFrame(delta_from_main_all,columns=camera_ids[1:]).plot.line(figsize=(10, 5))
-    plt.title(f'delta_from_main')
-    plt.ylabel('Time Spread (ms)')
+    pd.DataFrame(delta_from_main_all, columns=camera_ids[1:]).plot.line(figsize=(10, 5))
+    plt.title(f"delta_from_main")
+    plt.ylabel("Time Spread (ms)")
 
-    pd.DataFrame(frame_id_delta_all,columns=camera_ids[1:]).plot.line(figsize=(10, 5))
-    plt.title(f'frame_id_delta')
-    plt.ylabel('Frame ID Spread')
+    pd.DataFrame(frame_id_delta_all, columns=camera_ids[1:]).plot.line(figsize=(10, 5))
+    plt.title(f"frame_id_delta")
+    plt.ylabel("Frame ID Spread")
 
-    pd.DataFrame(serial_data_delta_all,columns=camera_ids[1:]).plot.line(figsize=(10, 5))
-    plt.title(f'serial_data_delta')
-    plt.ylabel('Serial Data Spread')
+    pd.DataFrame(serial_data_delta_all, columns=camera_ids[1:]).plot.line(figsize=(10, 5))
+    plt.title(f"serial_data_delta")
+    plt.ylabel("Serial Data Spread")
 
     # pd.DataFrame(delta_from_main_all, columns=camera_ids[1:]).abs().plot.line(figsize=(10, 5))
     # plt.title(f'delta_from_main log')
@@ -107,7 +108,7 @@ def parse_json(data_path):
     # # plt.savefig(f"D:\\CottonLab\\multi_camera_data\\timespread_debugging\\full_0302_experiment\\figures\\{fig_name}.png")
     plt.show()
 
-    print(pd.DataFrame(end_delta_list,columns=camera_ids[1:]).tail(3).abs().mean())
+    print(pd.DataFrame(end_delta_list, columns=camera_ids[1:]).tail(3).abs().mean())
 
 
 if __name__ == "__main__":

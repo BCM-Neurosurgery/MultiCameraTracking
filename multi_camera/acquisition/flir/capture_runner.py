@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import os
 
 import PySpin
@@ -11,8 +12,10 @@ from tqdm import tqdm
 from multi_camera.acquisition.flir.capture_loop import get_image_with_timeout, is_image_timeout_error
 from multi_camera.acquisition.flir.pipeline.queues import put_metadata_or_fail, safe_put
 
+log = logging.getLogger("flir_pipeline")
 
-def run_capture_loop(recorder, max_frames: int):
+
+def run_capture_loop(recorder, max_frames: int, health=None):
     """
     Hot path:
     - pull frame from each camera
@@ -55,7 +58,7 @@ def run_capture_loop(recorder, max_frames: int):
             # Use thread safe checking of semaphore to determine whether to stop recording
             if recorder.stop_recording.is_set():
                 recorder.stop_recording.clear()
-                print("Stopping recording")
+                log.info("Stopping recording (user requested)")
                 break
 
             # for each camera, get current frame and dispatch it
@@ -81,14 +84,14 @@ def run_capture_loop(recorder, max_frames: int):
                     if is_image_timeout_error(exc):
                         timeout_streaks[serial] += 1
                         if timeout_streaks[serial] == 1 or timeout_streaks[serial] % 10 == 0:
-                            tqdm.write(f"{serial}: image timeout streak {timeout_streaks[serial]} " f"(timeout_ms={image_timeout_ms})")
+                            log.warning("%s: image timeout streak %d (timeout_ms=%d)", serial, timeout_streaks[serial], image_timeout_ms)
                         if timeout_streaks[serial] >= max_consecutive_timeouts:
                             raise RuntimeError(f"{serial}: exceeded max consecutive image timeouts " f"({max_consecutive_timeouts})") from exc
                         continue
 
                     timeout_streaks[serial] += 1
                     if timeout_streaks[serial] == 1 or timeout_streaks[serial] % 10 == 0:
-                        tqdm.write(f"{serial}: failed to get image, streak {timeout_streaks[serial]} ({exc})")
+                        log.warning("%s: failed to get image, streak %d (%s)", serial, timeout_streaks[serial], exc)
                     if timeout_streaks[serial] >= max_consecutive_timeouts:
                         raise RuntimeError(f"{serial}: exceeded max consecutive errors " f"({max_consecutive_timeouts})") from exc
                     continue
@@ -99,7 +102,7 @@ def run_capture_loop(recorder, max_frames: int):
                 try:
                     if im_ref.IsIncomplete():
                         im_stat = im_ref.GetImageStatus()
-                        print(f"{serial}: Image incomplete | {PySpin.Image.GetImageStatusDescription(im_stat)}")
+                        log.warning("%s: Image incomplete | %s", serial, PySpin.Image.GetImageStatusDescription(im_stat))
                         continue
 
                     timestamp = im_ref.GetTimeStamp()
@@ -137,7 +140,7 @@ def run_capture_loop(recorder, max_frames: int):
                         if preview_this_frame:
                             real_time_images.append(im)
                     except Exception as exc:
-                        tqdm.write(f"Bad frame from {serial}: {exc}")
+                        log.warning("Bad frame from %s: %s", serial, exc)
                         continue
 
                     if recorder.video_base_file is not None:
@@ -151,6 +154,7 @@ def run_capture_loop(recorder, max_frames: int):
                                 "base_filename": recorder.video_base_file,
                             },
                             queue_name=f"image_queue:{serial}",
+                            health=health,
                         )
                 finally:
                     im_ref.Release()
@@ -168,6 +172,8 @@ def run_capture_loop(recorder, max_frames: int):
                 recorder.preview_callback(real_time_images)
 
             # Increment after frame is fully dispatched.
+            if health is not None:
+                prog.set_postfix_str(health.format_status())
             if recorder.camera_config["acquisition-type"] == "continuous":
                 frame_idx += 1
                 recorder.set_progress(frame_idx / total_frames)

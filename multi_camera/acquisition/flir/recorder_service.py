@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
 from dataclasses import dataclass, field
 
-from tqdm import tqdm
+log = logging.getLogger("flir_pipeline")
 
 from multi_camera.acquisition.flir.pipeline.queues import build_recorder_queues
 from multi_camera.acquisition.flir.storage.encode_jobs_repo import EncodeJobsRepo, get_encode_jobs_db_path
@@ -152,7 +153,7 @@ class RecorderService:
         for thread in handles.image_threads:
             thread.join(timeout=5)
             if thread.is_alive():
-                tqdm.write(f"WARNING: {thread.name} did not exit within timeout")
+                log.warning("%s did not exit within timeout", thread.name)
 
         # --- Phase 2: tell encode workers to drain and exit ---
         # Safe: all encode jobs are now in SQLite.
@@ -161,7 +162,7 @@ class RecorderService:
         for thread in handles.encode_threads:
             thread.join(timeout=60)
             if thread.is_alive():
-                tqdm.write(f"WARNING: {thread.name} did not exit within timeout")
+                log.warning("%s did not exit within timeout", thread.name)
 
         # --- Phase 3: stop metadata writer and wait for final flush ---
         if not self.recorder.writer_error["event"].is_set():
@@ -178,7 +179,7 @@ class RecorderService:
         if handles.metadata_writer_thread is not None:
             handles.metadata_writer_thread.join(timeout=5)
             if handles.metadata_writer_thread.is_alive():
-                tqdm.write(f"WARNING: {handles.metadata_writer_thread.name} did not exit within timeout")
+                log.warning("%s did not exit within timeout", handles.metadata_writer_thread.name)
 
         # --- Phase 4: tell finalize worker to drain and exit ---
         # Safe: all finalize jobs are now in SQLite.
@@ -186,7 +187,7 @@ class RecorderService:
         if handles.metadata_finalize_thread is not None:
             handles.metadata_finalize_thread.join(timeout=20)
             if handles.metadata_finalize_thread.is_alive():
-                tqdm.write(f"WARNING: {handles.metadata_finalize_thread.name} did not exit within timeout")
+                log.warning("%s did not exit within timeout", handles.metadata_finalize_thread.name)
 
     def collect_records(self) -> list[dict]:
         records = []

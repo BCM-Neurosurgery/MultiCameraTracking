@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import struct
@@ -10,9 +11,10 @@ from queue import Queue
 
 import cv2
 import numpy as np
-from tqdm import tqdm
 
 from multi_camera.acquisition.flir.storage.encode_jobs_repo import EncodeJobsRepo
+
+log = logging.getLogger("flir_pipeline")
 
 
 class SegmentJournalWriter:
@@ -62,6 +64,11 @@ def _flush_journal_to_encode_job(
         return
 
     journal.close()
+    if journal.frame_count > 0:
+        journal_size_mb = os.path.getsize(journal.journal_path) / (1024 * 1024)
+        avg_jpeg_kb = (journal_size_mb * 1024) / journal.frame_count if journal.frame_count else 0
+        log.info("segment closed: %s (%d frames, %.1f MB)", journal.journal_path, journal.frame_count, journal_size_mb)
+        log.debug("avg jpeg size: %.1f KB/frame", avg_jpeg_kb)
     if journal.frame_count <= 0:
         try:
             os.remove(journal.journal_path)
@@ -124,7 +131,7 @@ def write_journal_queue(
                 journal.write_frame(im, bayer_pattern=pixel_format)
             except Exception as exc:
                 err_msg = f"write_journal_queue error ({serial}): {exc}"
-                tqdm.write(err_msg)
+                log.error(err_msg)
                 worker_error_state["message"] = err_msg
                 worker_error_state["event"].set()
                 break
@@ -134,5 +141,5 @@ def write_journal_queue(
         try:
             _flush_journal_to_encode_job(repo, journal, acquisition_fps)
         except Exception as exc:
-            tqdm.write(f"flush error during cleanup ({serial}): {exc}")
+            log.error("flush error during cleanup (%s): %s", serial, exc)
         flush_done_event.set()

@@ -3,11 +3,11 @@
 import PySpin
 import simple_pyspin
 from simple_pyspin import Camera
-from tqdm import tqdm
 from datetime import datetime
 from typing import List, Callable, Awaitable, Optional
 from pydantic import BaseModel
 import concurrent.futures
+import logging
 import threading
 import asyncio
 import json
@@ -25,7 +25,11 @@ from multi_camera.acquisition.flir.camera_runtime import (
     stop_cameras as camera_stop_cameras,
 )
 from multi_camera.acquisition.flir.capture_runner import run_capture_loop as capture_run_capture_loop
+from multi_camera.acquisition.flir.logging_setup import setup_recording_logger
+from multi_camera.acquisition.flir.pipeline.health import PipelineHealth
 from multi_camera.acquisition.flir.recorder_service import RecorderService
+
+log = logging.getLogger("flir_pipeline")
 
 
 # Data structures we expose outside this library
@@ -85,7 +89,7 @@ class FlirRecorder:
         return self.status
 
     def set_status(self, status):
-        print("setting status: ", status)
+        log.info("setting status: %s", status)
         self.status = status
         if self.status_callback is not None:
             self.status_callback(status)
@@ -98,7 +102,7 @@ class FlirRecorder:
         if not all([c.GevIEEE1588 for c in self.cams]):
             self.set_status("Synchronizing")
 
-            print("Cameras not synchronized. Enabling IEEE1588 (takes 10 seconds)")
+            log.info("Cameras not synchronized. Enabling IEEE1588 (takes 10 seconds)")
             for c in self.cams:
                 c.GevIEEE1588 = True
 
@@ -132,7 +136,7 @@ class FlirRecorder:
                 requested_cameras = num_cams
                 self.camera_config = {}
 
-            print(f"Requested cameras: {requested_cameras}")
+            log.info("Requested cameras: %s", requested_cameras)
 
             # Identify the interface we are going to send a command for synchronous recording
             iface = None
@@ -145,7 +149,7 @@ class FlirRecorder:
                     # Break out of the loop after finding the interface and cameras
                     break
 
-            print(f"Using interface {i} with {selected_cams} cameras. In use: {current_iface.IsInUse()}")
+            log.info("Using interface %d with %s cameras. In use: %s", i, selected_cams, current_iface.IsInUse())
         finally:
             iface_list.Clear()
 
@@ -168,7 +172,7 @@ class FlirRecorder:
             self.cams = [Camera(i, lock=True) for i in self.iface_cameras]
 
         if self.camera_config:
-            print(self.camera_config)
+            log.info("camera config: %s", self.camera_config)
             # Parse additional parameters from the config file
             exposure_time = self.camera_config["acquisition-settings"]["exposure_time"]
             frame_rate = self.camera_config["acquisition-settings"]["frame_rate"]
@@ -267,22 +271,22 @@ class FlirRecorder:
             config_metadata["meta_info"] = self.camera_config["meta-info"]
             config_metadata["camera_info"] = self.camera_config["camera-info"]
             config_metadata["camera_config_hash"] = self.get_config_hash(self.camera_config)
-            print("CONFIG HASH", config_metadata["camera_config_hash"])
+            log.info("config hash: %s", config_metadata["camera_config_hash"])
         else:
             config_metadata["meta_info"] = "No Config"
             config_metadata["camera_info"] = [c.DeviceSerialNumber for c in self.cams]
             config_metadata["camera_config_hash"] = None
         return config_metadata
 
-    def _run_capture_loop(self, max_frames: int):
-        return capture_run_capture_loop(recorder=self, max_frames=max_frames)
+    def _run_capture_loop(self, max_frames: int, health=None):
+        return capture_run_capture_loop(recorder=self, max_frames=max_frames, health=health)
 
     def _shutdown_preview(self):
         if self.preview_callback:
             try:
                 self.preview_callback(None)
             except Exception as e:
-                tqdm.write(f"Preview callback shutdown error: {e}")
+                log.warning("Preview callback shutdown error: %s", e)
 
     def start_acquisition(self, recording_path=None, preview_callback: callable = None, max_frames: int = 1000):
         """
@@ -299,6 +303,24 @@ class FlirRecorder:
 
         self._prepare_recording_target(recording_path=recording_path, preview_callback=preview_callback)
         config_metadata = self._build_config_metadata()
+
+        # Set up persistent session log alongside the video data.
+        health = None
+        if self.video_base_file is not None:
+            session_name = self.video_base_name
+            setup_recording_logger(output_dir=self.video_path, session_name=session_name)
+            health = PipelineHealth(num_cameras=len(self.cams))
+            log.info("recording started: %s", self.video_base_file)
+            log.info(
+                "cameras: %d, fps: %s, segment: %s frames, encode_workers: %s",
+                len(self.cams),
+                self.cams[0].AcquisitionFrameRate if self.cams else "?",
+                self.camera_config.get("acquisition-settings", {}).get("video_segment_len", "?"),
+                os.environ.get("ENCODE_WORKERS", "3"),
+            )
+            for cam in self.cams:
+                log.info("camera %s: %dx%d %s, exposure=%sus", cam.DeviceSerialNumber, cam.Width, cam.Height, cam.PixelFormat, cam.ExposureTime)
+
         recorder_service = RecorderService(self)
         recorder_service.initialize_queues(max_frames=max_frames)
         self.writer_error["event"].clear()
@@ -315,8 +337,8 @@ class FlirRecorder:
             camera_arm_cameras_and_issue_trigger(self.cams, self.iface, self.gpio_settings)
 
             # Phase 3: capture loop.
-            self._run_capture_loop(max_frames=max_frames)
-            print("Finished recording")
+            self._run_capture_loop(max_frames=max_frames, health=health)
+            log.info("Finished recording")
 
         finally:
             # Phase 4: orderly shutdown.
@@ -350,7 +372,7 @@ class FlirRecorder:
         # this releases all the handles to the pyspin system.
         self.close()
 
-        print("Reopening and resetting")
+        log.info("Reopening and resetting")
         ########## working with new, temporary, reference to PySpin system
         # this seems important for reliability
 
@@ -359,7 +381,7 @@ class FlirRecorder:
         cams = system.GetCameras()
 
         def reset_cam(s):
-            print("Opening and resetting camera", s)
+            log.info("Opening and resetting camera %s", s)
             c = cams.GetBySerial(s)
             c.Init()
             c.DeviceReset()
@@ -389,7 +411,7 @@ class FlirRecorder:
         if len(self.cams) > 0:
 
             def close_cam(c):
-                print("Closing camera", c.DeviceSerialNumber)
+                log.info("Closing camera %s", c.DeviceSerialNumber)
                 c.cam.DeInit()
                 c.close()
                 del c
@@ -411,7 +433,7 @@ class FlirRecorder:
 
         self.config_file = None
 
-        print("PySpin system released")
+        log.info("PySpin system released")
 
     def reset(self):
         self.close()

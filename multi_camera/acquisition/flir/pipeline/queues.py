@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 from dataclasses import dataclass
 from queue import Queue
 import threading
+
+log = logging.getLogger("flir_pipeline")
 
 
 @dataclass(frozen=True)
@@ -39,15 +42,14 @@ def set_worker_error(worker_error_state: dict | None, message: str):
         event.set()
 
 
-def safe_put(q: Queue, item, queue_name: str | None = None):
+def safe_put(q: Queue, item, queue_name: str | None = None, health=None):
     """Insert an item without blocking. Drops item when queue is full."""
     try:
         q.put_nowait(item)
     except queue.Full:
-        if queue_name:
-            print(f"{queue_name} full, dropping item")
-        else:
-            print("queue full, dropping item")
+        if health is not None:
+            health.inc_dropped()
+        log.warning("%s full, dropping item", queue_name or "queue")
 
 
 def put_metadata_or_fail(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import struct
 import subprocess
@@ -10,9 +11,10 @@ import time
 
 import cv2
 import numpy as np
-from tqdm import tqdm
 
 from multi_camera.acquisition.flir.storage.encode_jobs_repo import EncodeJobsRepo
+
+log = logging.getLogger("flir_pipeline")
 
 # Map bayer_pattern strings to ffmpeg pixel format names.
 # ffmpeg handles debayering internally, avoiding Python-side cv2.cvtColor
@@ -117,7 +119,7 @@ def _encode_journal_to_mp4(job, keep_journal: bool):
         raise RuntimeError(f"ffmpeg exited {proc.returncode}: {stderr_text}")
 
     if decoded_count != job.frame_count:
-        tqdm.write(f"frame count mismatch for job {job.job_id}: " f"expected {job.frame_count}, decoded {decoded_count}")
+        log.warning("frame count mismatch for job %s: expected %d, decoded %d", job.job_id, job.frame_count, decoded_count)
 
     os.replace(tmp_out, job.output_mp4)
 
@@ -152,11 +154,17 @@ def encode_jobs_worker(
                 continue
 
             try:
+                t0 = time.monotonic()
                 _encode_journal_to_mp4(job, keep_journal)
+                elapsed = time.monotonic() - t0
+                fps = job.frame_count / elapsed if elapsed > 0 else 0
+                log.info("encoded job %s: %s (%.1fs, %.0f fps)", job.job_id, job.output_mp4, elapsed, fps)
                 repo.mark_done(conn, job.job_id)
+                pending = repo.count_pending(conn)
+                log.debug("encode backlog: %d pending jobs", pending)
             except Exception as exc:
                 err = str(exc)
-                tqdm.write(f"encode job failed ({worker_id}, job_id={job.job_id}): {err}")
+                log.error("encode job failed (%s, job_id=%s): %s", worker_id, job.job_id, err)
                 repo.mark_failed(conn, job.job_id, err)
                 # Clean up tmp file on failure
                 tmp_out = job.output_mp4 + ".tmp.mp4"

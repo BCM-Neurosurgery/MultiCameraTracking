@@ -34,10 +34,10 @@ for c in cam_list:
                 # print(cam.get_info(attribute))
                 current_attribute = cam.get_info(attribute)
 
-                if 'value' in current_attribute.keys():
-                    val = 'value'
+                if "value" in current_attribute.keys():
+                    val = "value"
                 else:
-                    val = 'access'
+                    val = "access"
 
                 # print(type(current_attribute))
                 # print(current_attribute['value'])
@@ -51,15 +51,16 @@ for c in cam_list:
         del cam
 cam_df = pd.DataFrame(cam_attributes)
 
-cam_df['unique_vals'] = cam_df.nunique(axis=1)
+cam_df["unique_vals"] = cam_df.nunique(axis=1)
 diff_val_df = cam_df[cam_df.unique_vals > 1]
 
 print(cam_df)
 
 import time
-current_time = time.strftime('%Y%m%d_%H%M%S')
-cam_df.to_csv(f'all_cam_settings_{current_time}.csv')
-diff_val_df.to_csv(f'diff_cam_settings_{current_time}.csv')
+
+current_time = time.strftime("%Y%m%d_%H%M%S")
+cam_df.to_csv(f"all_cam_settings_{current_time}.csv")
+diff_val_df.to_csv(f"diff_cam_settings_{current_time}.csv")
 
 # # Set up acquisition parameters
 # num_buffers = 10

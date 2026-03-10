@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import PySpin
 from simple_pyspin import Camera
-from tqdm import tqdm
+
+log = logging.getLogger("flir_pipeline")
 
 
 def select_interface(interface, cameras):
@@ -12,7 +15,7 @@ def select_interface(interface, cameras):
     # file is provided) or number of cameras. It checks if the current
     # interface has cameras and returns a list of valid camera IDs or
     # number of cameras
-    print("Update cameras:", interface.UpdateCameras())
+    log.info("Update cameras: %s", interface.UpdateCameras())
 
     # Check the current interface to see if it has cameras
     interface_cams = interface.GetCameras()
@@ -42,7 +45,7 @@ def select_interface(interface, cameras):
                     invalid_ids = [c for c in cameras if str(c) not in camera_id_list]
 
                     if invalid_ids:
-                        print(f"The following camera ID(s) from are missing: {invalid_ids} but continuing")
+                        log.warning("The following camera ID(s) are missing: %s but continuing", invalid_ids)
 
                     retval = camera_id_list
 
@@ -55,7 +58,7 @@ def select_interface(interface, cameras):
 
                 # Otherwise, set num_cams to the # of available cameras
                 num_cams = cameras
-                print(f"No config file passed. Selecting the first {num_cams} cameras in the list.")
+                log.info("No config file passed. Selecting the first %d cameras in the list.", num_cams)
 
                 retval = num_cams
     finally:
@@ -107,7 +110,7 @@ def init_camera(
     try:
         c.AcquisitionFrameRateEnable = True
     except Exception as e:
-        tqdm.write(f"Could not enable frame rate control on {c.DeviceSerialNumber}: {e}")
+        log.warning("Could not enable frame rate control on %s: %s", c.DeviceSerialNumber, e)
 
     try:
         if hasattr(c, "AcquisitionFrameRateAuto"):
@@ -118,7 +121,7 @@ def init_camera(
     try:
         c.AcquisitionFrameRate = frame_rate
     except Exception as e:
-        tqdm.write(f"Could not set frame rate on {c.DeviceSerialNumber}: {e}")
+        log.warning("Could not set frame rate on %s: %s", c.DeviceSerialNumber, e)
 
     # let the auto gain match the brightness across images as much as possible
     c.GainAuto = "Continuous"
@@ -196,7 +199,7 @@ def init_camera(
         c.LineMode = "Output"
     else:
         if line2 != "Off":
-            print(f"{line2} is not valid for line2. Setting to 'Off'")
+            log.warning("%s is not valid for line2. Setting to 'Off'", line2)
 
     if chunk_data:
         c.ChunkModeActive = True
@@ -220,7 +223,7 @@ def init_camera(
             c.TriggerMode = "On"
         else:
             if line0 != "Off":
-                print(f"{line0} is not valid for line0. Setting to 'Off'")
+                log.warning("%s is not valid for line0. Setting to 'Off'", line0)
             c.TriggerMode = "Off"
             c.TriggerSelector = "AcquisitionStart"  # Need to select AcquisitionStart for real time clock
             c.TriggerSource = "Action0"
@@ -235,4 +238,4 @@ def init_camera(
             c.SerialPortParity = "None"
         else:
             if line3 != "Off":
-                print(f"{line3} is not valid for line3. Setting to 'Off'")
+                log.warning("%s is not valid for line3. Setting to 'Off'", line3)
