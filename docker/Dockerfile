@@ -1,40 +1,63 @@
 # syntax=docker/dockerfile:1
-FROM peabody124/posepipe
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
-# Allow passing host UID/GID at build time (defaults to 1000)
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 
-# Create a non-root user 'appuser' with matching UID/GID
+# Create non-root user with matching host UID/GID
 RUN groupadd -g ${HOST_GID} appuser \
  && useradd -m -u ${HOST_UID} -g appuser -s /bin/bash appuser
 
-# Set HOME and npm cache directory under the non-root user
 ENV HOME=/home/appuser \
-    NPM_CONFIG_CACHE=/home/appuser/.npm
-
-### Install Spinnaker
-COPY docker/flir/spinnaker-3.1.0.79-amd64 /spinnaker
-COPY docker/flir/*.whl /spinnaker
+    NPM_CONFIG_CACHE=/home/appuser/.npm \
+    PYTHONUNBUFFERED=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
-    apt-get install -y libusb-1.0-0 qtbase5-dev qt5-default qtchooser qt5-qmake qtbase5-dev-tools curl screen && \
-    echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections && \
+
+### Core system dependencies
+RUN apt-get update && apt-get install -y \
+    python3 python3-dev python3-pip \
+    libusb-1.0-0 libgl1 libglib2.0-0 ffmpeg \
+    curl screen net-tools git \
+    ca-certificates gnupg \
+    libtbb-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+### FFmpeg with NVENC support (BtbN static build — includes libx264, h264_nvenc, hevc_nvenc)
+### This replaces the old volume-mount hack with a reproducible build step
+RUN curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+    | tar -xJ --strip-components=2 -C /usr/local/bin/ \
+      ffmpeg-master-latest-linux64-gpl/bin/ffmpeg \
+      ffmpeg-master-latest-linux64-gpl/bin/ffprobe
+
+### Install Spinnaker SDK 4.3 (Ubuntu 22.04, Python 3.10)
+COPY docker/flir/spinnaker-4.3.0.189-amd64 /tmp/spinnaker-sdk
+COPY docker/flir/spinnaker_python-4.3.0.189-cp310-cp310-linux_x86_64.whl /tmp/
+
+# Install only the runtime library debs (skip spinview-qt, -dev, -doc to avoid Qt deps)
+RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections && \
     echo libgentl libspinnaker/accepted-flir-eula boolean true | debconf-set-selections && \
-    dpkg -i /spinnaker/*.deb && \
-    pip3 install /spinnaker/*.whl
+    dpkg -i /tmp/spinnaker-sdk/libgentl_*.deb \
+            /tmp/spinnaker-sdk/libspinnaker_4.3.0.189_amd64.deb \
+            /tmp/spinnaker-sdk/libspinnaker-c_*.deb \
+            /tmp/spinnaker-sdk/libspinvideo_*.deb \
+            /tmp/spinnaker-sdk/libspinvideo-c_*.deb \
+            /tmp/spinnaker-sdk/spinupdate_*.deb \
+            /tmp/spinnaker-sdk/spinnaker_4.3.0.189_amd64.deb || true && \
+    apt-get update && apt-get -f install -y && \
+    pip3 install /tmp/spinnaker_python-4.3.0.189-cp310-cp310-linux_x86_64.whl && \
+    rm -rf /tmp/spinnaker-sdk /tmp/*.whl /var/lib/apt/lists/*
 
-### Install Node.js & npm
-RUN apt-get install -y ca-certificates curl gnupg && mkdir -p /etc/apt/keyrings
-RUN curl -fsSL \
-      https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-RUN echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
-      | tee /etc/apt/sources.list.d/nodesource.list
-RUN apt-get update && apt-get install -y nodejs
+### Install Node.js 20.x
+RUN mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    | tee /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
-# Prepare npm cache directory and adjust ownership
 RUN mkdir -p ${NPM_CONFIG_CACHE} \
  && chown -R appuser:appuser ${NPM_CONFIG_CACHE}
 
@@ -44,28 +67,14 @@ COPY react_frontend/package*.json ./
 RUN npm install
 COPY react_frontend/ ./
 
-### Additional utilities
-RUN apt-get install -y net-tools ffmpeg
-
-### Install EasyMocap
+### Install EasyMocap (for future 3D reconstruction pipeline)
 WORKDIR /
 RUN git clone https://github.com/peabody124/EasyMocap && \
-    pip install --upgrade pip && \
-    pip install -e /EasyMocap
+    pip3 install --upgrade pip && \
+    pip3 install -e /EasyMocap
 
-### Biomechanical visualization dependencies
-#
-# Pin Torch to match the PyTorch3D wheel below (py38_cu117_pyt201).
-# This avoids pip pulling newer CUDA 12.x Torch deps (e.g., nvidia_cudnn_cu12) during build.
-# RUN pip3 install --no-cache-dir \
-#       --index-url https://download.pytorch.org/whl/cu117 \
-#       --extra-index-url https://pypi.org/simple \
-#       torch==2.0.1+cu117 && \
-#     pip3 install fvcore iopath trimesh pyvista && \
-#     pip3 install --no-index --no-cache-dir pytorch3d \
-#       -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu117_pyt201/download.html
-
-RUN apt-get install -y libtbb-dev && pip3 install tbb numba && pip3 install --upgrade tbb
+### Performance libraries
+RUN pip3 install tbb numba
 
 ### MultiCameraTracking
 WORKDIR /Mocap
@@ -84,7 +93,6 @@ RUN chmod +x /Mocap/start_acquisition_gui.sh
 WORKDIR /
 RUN mkdir -p /data /configs
 
-# Use the non-root user from here on
 USER appuser
 
 ENTRYPOINT ["/bin/bash"]

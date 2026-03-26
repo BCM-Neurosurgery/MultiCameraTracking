@@ -15,9 +15,6 @@ services:
       - ${DATA_VOLUME}:/data
       - ${CAMERA_CONFIGS}:/configs
       - /etc/localtime:/etc/localtime:ro
-      - /home/cameras/BCM/MultiCameraTracking/docker/ffmpeg-nvenc:/usr/local/bin/ffmpeg:ro
-      - /home/cameras/BCM/MultiCameraTracking/docker/ffprobe-nvenc:/usr/local/bin/ffprobe:ro
-      - /home/cameras/BCM/MultiCameraTracking/multi_camera:/Mocap/multi_camera
       - ${DATAJOINT_EXTERNAL}:/datajoint_external
     network_mode: host
     deploy:

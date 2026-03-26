@@ -149,7 +149,7 @@ class FlirRecorder:
                     # Break out of the loop after finding the interface and cameras
                     break
 
-            log.info("Using interface %d with %s cameras. In use: %s", i, selected_cams, current_iface.IsInUse())
+            log.info("Using interface %d with %s cameras.", i, selected_cams)
         finally:
             iface_list.Clear()
 
