@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship, declarative_base, joinedload
 from typing import Union, Tuple, List, Optional
 from pydantic import BaseModel
 from datetime import date, datetime
+import logging
 
 Base = declarative_base()
 
@@ -67,18 +68,7 @@ def add_recording(
     should_process: Optional[bool] = True,
     timestamp_spread: Optional[int] = None,
 ):
-    print(
-        "Adding recording to database: ",
-        participant_name,
-        session_date,
-        session_path,
-        filename,
-        recording_timestamp,
-        comment,
-        config_file,
-        should_process,
-        timestamp_spread,
-    )
+    logging.getLogger("acquisition").debug("Saving to database: %s", filename)
 
     # if date is a string, convert to a python date type
     if isinstance(session_date, str):
@@ -94,9 +84,7 @@ def add_recording(
         db.flush()
 
     # Create or update the session
-    session = (
-        db.query(Session).filter(Session.participant_id == participant.id, Session.session_date == session_date).first()
-    )
+    session = db.query(Session).filter(Session.participant_id == participant.id, Session.session_date == session_date).first()
     if not session:
         session = Session(participant_id=participant.id, session_path=session_path, session_date=session_date)
         db.add(session)
@@ -163,8 +151,7 @@ def get_recordings(
                 continue
 
             recording_out_list = [
-                RecordingOut(**{k: v for k, v in recording.__dict__.items() if k != "_sa_instance_state"})
-                for recording in session.recordings
+                RecordingOut(**{k: v for k, v in recording.__dict__.items() if k != "_sa_instance_state"}) for recording in session.recordings
             ]
 
             # check if there is an imported entry for this session
@@ -280,13 +267,16 @@ def synchronize_to_datajoint(db: Session):
             db.delete(imported)
             db.commit()
 
+
 def get_datajoint_external_path():
     import datajoint as dj
 
-    return dj.config['stores']['localattach']['location']
+    return dj.config["stores"]["localattach"]["location"]
+
 
 def check_datajoint_external_mounted(mount_path, sentinel_file_name=".multi_cam_mount_check"):
     import os
+
     """Check if the external drive is mounted and has the sentinel file"""
 
     # Sentinel file can be used for other checks like comparing the files last modified date
@@ -301,14 +291,13 @@ def check_datajoint_external_mounted(mount_path, sentinel_file_name=".multi_cam_
 
     print("External drive mounted and sentinel file found.")
 
+
 def push_to_datajoint(db: Session, participant_id: str, session_date: date, video_project: str):
     from multi_camera.datajoint.sessions import import_session
 
     # get the list of recordings from the database with their comments
     # that match the participant and session date
-    db_recordings: ParticipantOut = get_recordings(
-        db, participant_name=participant_id, filter_by_session_date=session_date
-    )
+    db_recordings: ParticipantOut = get_recordings(db, participant_name=participant_id, filter_by_session_date=session_date)
     assert len(db_recordings) == 1, "Did not find exactly one participant for this name."
     sessions: SessionOut = db_recordings[0].sessions
     assert len(sessions) == 1, "Did not find exactly one session for this participant and date."
@@ -316,9 +305,7 @@ def push_to_datajoint(db: Session, participant_id: str, session_date: date, vide
 
     # filter out the recordings that should not be processed and retain the
     # filename and comment
-    recordings = [
-        (rec.filename, rec.comment) for rec in recordings if rec.should_process and rec.comment != "calibration"
-    ]
+    recordings = [(rec.filename, rec.comment) for rec in recordings if rec.should_process and rec.comment != "calibration"]
 
     print("Processing recordings: ", recordings)
 

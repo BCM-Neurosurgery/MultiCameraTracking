@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import base64
 import numpy as np
 import logging
+import warnings
 import math
 import datetime
 import cv2
@@ -32,7 +33,6 @@ from multi_camera.backend.recording_db import (
     RecordingOut,
 )
 
-
 # file templates directory, which is located relative to this file location
 templates = os.path.split(__file__)[0]
 templates = os.path.join(templates, "templates")
@@ -50,14 +50,14 @@ log_colors_config = {
     "ERROR": "red",
     "CRITICAL": "red,bg_white",
 }
-log_format = colorlog.ColoredFormatter(
-    "%(log_color)s%(levelname)s (%(name)s):%(reset)s  %(message)s", log_colors=log_colors_config
-)
+log_format = colorlog.ColoredFormatter("%(log_color)s%(levelname)s (%(name)s):%(reset)s  %(message)s", log_colors=log_colors_config)
 acquisition_logger = logging.getLogger("acquisition")
-streamHandler = logging.StreamHandler()
-streamHandler.setFormatter(log_format)
-acquisition_logger.addHandler(streamHandler)
-acquisition_logger.setLevel(logging.DEBUG)
+acquisition_logger.propagate = False
+if not acquisition_logger.handlers:
+    streamHandler = logging.StreamHandler()
+    streamHandler.setFormatter(log_format)
+    acquisition_logger.addHandler(streamHandler)
+acquisition_logger.setLevel(logging.INFO)
 
 
 class Session(BaseModel):
@@ -120,6 +120,7 @@ _default_projects = "TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036,TE
 _project_ids = os.environ.get("PROJECT_IDS", _default_projects)
 PROJECT_IDS = [project.strip() for project in _project_ids.split(",") if project.strip()]
 
+
 def discover_config_files(config_path: str) -> List[str]:
     """Return config filenames for UI dropdown, keeping empty option first."""
     try:
@@ -134,6 +135,8 @@ def discover_config_files(config_path: str) -> List[str]:
     # Support both common YAML extensions.
     yaml_files = sorted([f for f in config_files if f.endswith((".yaml", ".yml"))])
     return [""] + yaml_files
+
+
 # import socket
 # print(socket.gethostname())
 # print(os.environ.get("HOSTNAME", "localhost"))
@@ -205,13 +208,19 @@ async def lifespan(app: FastAPI):
 
     db = get_db()
 
-    # adding a try/except here to catch the case where the database is not available
-    # this can happen if the database is not running or if the network is down
+    # Synchronize local SQLite DB with DataJoint (MySQL).
+    # Silently skip if DataJoint is not configured or unreachable.
     try:
-        synchronize_to_datajoint(db)
-    except Exception as e:  
-        acquisition_logger.error(f"Could not synchronize to datajoint: {e}")
-        
+        import datajoint as dj
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="No datajoint.json found")
+            if dj.config["database.user"]:
+                synchronize_to_datajoint(db)
+            else:
+                acquisition_logger.warning("DataJoint not configured — skipping sync")
+    except Exception as e:
+        acquisition_logger.warning("DataJoint unavailable: %s", e)
 
     yield
 
@@ -267,12 +276,14 @@ class NewTrialData(BaseModel):
     comment: str
     max_frames: int
 
+
 class PreviewData(BaseModel):
     max_frames: int
 
 
 class ConfigFileData(BaseModel):
     config: str
+
 
 class PriorRecordings(BaseModel):
     participant: str
@@ -329,7 +340,7 @@ async def set_session(subject_id: str, project_id: Optional[str] = Query(None)) 
         recording_path=session_dir,
         project_id=project_id,
     )
-    print("New session: ", state.current_session)
+    acquisition_logger.info("New session: %s (%s)", subject_id, project_id)
 
     return state.current_session
 
@@ -349,7 +360,7 @@ async def new_trial(data: NewTrialData):
     comment = data.comment
     max_frames = data.max_frames
 
-    print("New trial: ", data)
+    acquisition_logger.info("New trial: %s (max_frames=%s)", recording_filename, max_frames)
 
     # Build the recording file name from the components
     now = datetime.datetime.now()
@@ -374,10 +385,9 @@ async def new_trial(data: NewTrialData):
     config = await get_current_config()
 
     def task_done_callback(task):
-        print("Task completed.")
         try:
             result = task.result()
-            print(f"Task result: {result}")
+            acquisition_logger.info("Recording complete. %d segment(s) saved.", len(result))
 
             # Open a fresh DB session — the injected one is already closed
             # by the time this callback fires.
@@ -398,7 +408,7 @@ async def new_trial(data: NewTrialData):
             finally:
                 cb_db.close()
         except Exception as e:
-            print(f"Task raised an exception: {e}")
+            acquisition_logger.error("Recording failed: %s", e)
 
     task.add_done_callback(task_done_callback)
 
@@ -464,7 +474,7 @@ async def get_prior_recordings(db=Depends(db_dependency)) -> List[PriorRecording
 
 @api_router.post("/update_recording")
 async def update_recording(recording: PriorRecordings, db=Depends(db_dependency)):
-    print("Updating recording: ", recording)
+    acquisition_logger.debug("Updating recording: %s", recording.filename)
 
     participant = ParticipantOut(name=recording.participant, sessions=[])
     recording = RecordingOut(
@@ -485,7 +495,7 @@ async def update_recording(recording: PriorRecordings, db=Depends(db_dependency)
 async def update_recording(recording: PriorRecordings, db=Depends(db_dependency)):
     from multi_camera.datajoint.calibrate_cameras import run_calibration
 
-    print("Calibrating recording: ", recording)
+    acquisition_logger.info("Calibrating: %s", recording.filename)
 
     vid_path, vid_base = os.path.split(recording.filename)
 
@@ -531,14 +541,68 @@ async def get_current_config() -> str:
     return os.path.split(config)[-1]
 
 
+def _log_system_banner(recorder, config_name: str):
+    """Log a human-readable summary of the configured system."""
+    from multi_camera.acquisition.flir.gpu_detect import detect_gpu_info, detect_nvenc
+
+    cfg = recorder.camera_config or {}
+    acq = cfg.get("acquisition-settings", {})
+
+    num_cams = len(cfg.get("camera-info", {}))
+    fps = acq.get("frame_rate", 30)
+    exposure = acq.get("exposure_time", 15000)
+    gamma = acq.get("gamma", None)
+    mode = cfg.get("acquisition-type", "continuous")
+    segment = acq.get("video_segment_len", "—")
+    nvenc_preset = acq.get("nvenc_preset", "auto")
+
+    gpu = detect_gpu_info()
+    has_nvenc = detect_nvenc()
+
+    w = 55
+    lines = [
+        "",
+        "═" * w,
+        "  FLIR Multi-Camera Acquisition System".center(w),
+        "═" * w,
+        f"  Cameras      {num_cams} connected",
+        f"  Frame Rate   {fps} FPS",
+        f"  Exposure     {exposure} µs",
+        f"  Gamma        {gamma if gamma is not None else 'disabled'}",
+        f"  Mode         {mode} (segment: {segment} frames)",
+        f"  Config       {config_name}",
+        "─" * w,
+    ]
+
+    if gpu:
+        lines.append(f"  GPU          {gpu['name']} ({gpu['vram_mb']} MB VRAM)")
+        lines.append(f"  Driver       {gpu['driver']}")
+    else:
+        lines.append("  GPU          not detected")
+
+    if has_nvenc:
+        lines.append(f"  Encoder      h264_nvenc (preset: {nvenc_preset}, VBR CQ=24)")
+    else:
+        lines.append("  Encoder      libx264 (CPU, preset: veryfast, CRF=18)")
+
+    lines.append("═" * w)
+    lines.append("")
+
+    for line in lines:
+        if line and not line.startswith("═") and not line.startswith("─"):
+            acquisition_logger.info(line)
+        else:
+            print(line)
+
+
 @api_router.post("/current_config")
 async def update_config(config: ConfigFileData):
-    print("Received config: ", config.config)
     state: GlobalState = get_global_state()
     if config.config == "":
         state.acquisition.reset()
     else:
         await state.acquisition.configure_cameras(os.path.join(CONFIG_PATH, config.config))
+        await run_in_threadpool(_log_system_banner, state.acquisition, config.config)
     return {"status": "success", "config": config.config}
 
 
@@ -615,7 +679,7 @@ async def receive_frames(frames):
         return
 
     if frames is None:
-        print("Received empty frame")
+        acquisition_logger.debug("Received empty frame")
         return
 
     num_frames = len(frames)
@@ -690,7 +754,7 @@ async def video_endpoint():
 async def video_websocket_endpoint(websocket: WebSocket):
     state: GlobalState = get_global_state()
     await websocket.accept()
-    logger.info("Video Websocket connected")
+    acquisition_logger.debug("Video websocket connected")
     try:
         while not AppStatus.should_exit:
             try:
@@ -718,9 +782,7 @@ class SMPLData(BaseModel):
 
 
 @api_router.get("/mesh", response_model=SMPLData)
-async def get_mesh(
-    filename: str = Query(None, description="Name of the file to be used."), downsample: int = Query(default=5)
-) -> SMPLData:
+async def get_mesh(filename: str = Query(None, description="Name of the file to be used."), downsample: int = Query(default=5)) -> SMPLData:
     from .annotation import get_mesh
 
     res = get_mesh(filename, downsample)
@@ -762,9 +824,7 @@ class ReconstructionTrials(BaseModel):
 
 
 @api_router.get("/smpl_trials", response_model=List[ReconstructionTrials])
-async def get_smpl_trials(
-    model: str = Query(default="smpl", description="Type of SMPL model to use.")
-) -> List[ReconstructionTrials]:
+async def get_smpl_trials(model: str = Query(default="smpl", description="Type of SMPL model to use.")) -> List[ReconstructionTrials]:
     print(model)
     from .smpl import get_smpl_trials
 
@@ -861,5 +921,6 @@ if __name__ == "__main__":
         port=8000,
         reload=False,
         timeout_keep_alive=30,
-        # log_level="debug",
+        log_level="warning",
+        access_log=False,
     )
