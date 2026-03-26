@@ -78,6 +78,7 @@ def init_camera(
     binning: int = 1,
     exposure_time: int = 15000,
     frame_rate: int = 30,
+    gamma: float | None = None,
     gpio_settings: dict = {},
     chunk_data: list = [],
 ):
@@ -122,6 +123,15 @@ def init_camera(
         c.AcquisitionFrameRate = frame_rate
     except Exception as e:
         log.warning("Could not set frame rate on %s: %s", c.DeviceSerialNumber, e)
+
+    # Gamma correction (applied in-camera before readout).
+    if gamma is not None:
+        try:
+            c.GammaEnable = True
+            c.Gamma = gamma
+            log.info("Gamma set to %s on %s", gamma, c.DeviceSerialNumber)
+        except Exception as e:
+            log.warning("Could not set gamma on %s: %s", c.DeviceSerialNumber, e)
 
     # let the auto gain match the brightness across images as much as possible
     c.GainAuto = "Continuous"

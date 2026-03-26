@@ -190,6 +190,8 @@ class FlirRecorder:
         else:
             binning = 1
 
+        gamma = self.camera_config.get("acquisition-settings", {}).get("gamma", None)
+
         config_params = {
             "jumbo_packet": True,
             "triggering": self.trigger,
@@ -198,6 +200,7 @@ class FlirRecorder:
             "binning": binning,
             "exposure_time": exposure_time,
             "frame_rate": frame_rate,
+            "gamma": gamma,
             "gpio_settings": self.gpio_settings,
             "chunk_data": self.camera_config["acquisition-settings"]["chunk_data"],
         }
