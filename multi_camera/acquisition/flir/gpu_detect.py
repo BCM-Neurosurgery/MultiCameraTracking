@@ -1,4 +1,7 @@
-"""GPU detection and NVENC preset auto-recommendation."""
+"""GPU detection and NVENC preset auto-recommendation.
+
+Results are cached at module level — GPU capabilities don't change at runtime.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +11,10 @@ import time
 
 log = logging.getLogger("flir_pipeline")
 
+_nvenc_cache: bool | None = None
+_gpu_info_cache: dict | None = None
+_preset_cache: dict[tuple[int, int], str] = {}
+
 
 def detect_nvenc() -> bool:
     """Return True if ffmpeg h264_nvenc is available and functional.
@@ -16,6 +23,9 @@ def detect_nvenc() -> bool:
     so it catches driver issues, missing GPUs, and container passthrough
     failures.
     """
+    global _nvenc_cache
+    if _nvenc_cache is not None:
+        return _nvenc_cache
     try:
         result = subprocess.run(
             [
@@ -36,8 +46,10 @@ def detect_nvenc() -> bool:
             capture_output=True,
             timeout=10,
         )
-        return result.returncode == 0
+        _nvenc_cache = result.returncode == 0
+        return _nvenc_cache
     except Exception:
+        _nvenc_cache = False
         return False
 
 
@@ -46,6 +58,9 @@ def detect_gpu_info() -> dict:
 
     Returns empty dict if nvidia-smi is unavailable.
     """
+    global _gpu_info_cache
+    if _gpu_info_cache is not None:
+        return _gpu_info_cache
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"],
@@ -54,13 +69,17 @@ def detect_gpu_info() -> dict:
             timeout=5,
         )
         if result.returncode != 0:
-            return {}
+            _gpu_info_cache = {}
+            return _gpu_info_cache
         parts = [p.strip() for p in result.stdout.strip().split(",")]
         if len(parts) < 3:
-            return {}
-        return {"name": parts[0], "vram_mb": int(float(parts[1])), "driver": parts[2]}
+            _gpu_info_cache = {}
+            return _gpu_info_cache
+        _gpu_info_cache = {"name": parts[0], "vram_mb": int(float(parts[1])), "driver": parts[2]}
+        return _gpu_info_cache
     except Exception:
-        return {}
+        _gpu_info_cache = {}
+        return _gpu_info_cache
 
 
 def recommend_preset(num_cameras: int, target_fps: int = 30, min_headroom: float = 0.4) -> str:
@@ -72,8 +91,11 @@ def recommend_preset(num_cameras: int, target_fps: int = 30, min_headroom: float
     *target_fps* * (1 + *min_headroom*).
 
     Falls back to ``"p1"`` if no preset meets the threshold.
-    Takes ~2 seconds total.
+    Takes ~2 seconds total on first call; cached for subsequent calls.
     """
+    cache_key = (num_cameras, target_fps)
+    if cache_key in _preset_cache:
+        return _preset_cache[cache_key]
     threshold = target_fps * (1 + min_headroom)
     candidates = ["p5", "p4", "p3", "p1"]
 
@@ -81,8 +103,10 @@ def recommend_preset(num_cameras: int, target_fps: int = 30, min_headroom: float
         per_session_fps = _benchmark_preset(num_cameras, preset, num_frames=100)
         log.info("benchmark: %d sessions, preset %s → %.1f fps/session (need %.1f)", num_cameras, preset, per_session_fps, threshold)
         if per_session_fps >= threshold:
+            _preset_cache[cache_key] = preset
             return preset
 
+    _preset_cache[cache_key] = "p1"
     return "p1"
 
 

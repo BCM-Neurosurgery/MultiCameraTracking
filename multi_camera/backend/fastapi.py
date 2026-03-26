@@ -542,8 +542,12 @@ async def get_current_config() -> str:
 
 
 def _log_system_banner(recorder, config_name: str):
-    """Log a human-readable summary of the configured system."""
-    from multi_camera.acquisition.flir.gpu_detect import detect_gpu_info, detect_nvenc
+    """Log a human-readable summary of the configured system.
+
+    Also warms the GPU/NVENC detection caches so that start_acquisition
+    doesn't pay the ~3-4s detection cost on the first recording.
+    """
+    from multi_camera.acquisition.flir.gpu_detect import detect_gpu_info, detect_nvenc, recommend_preset
 
     cfg = recorder.camera_config or {}
     acq = cfg.get("acquisition-settings", {})
@@ -554,10 +558,17 @@ def _log_system_banner(recorder, config_name: str):
     gamma = acq.get("gamma", None)
     mode = cfg.get("acquisition-type", "continuous")
     segment = acq.get("video_segment_len", "—")
-    nvenc_preset = acq.get("nvenc_preset", "auto")
+    nvenc_preset_cfg = acq.get("nvenc_preset", "auto")
 
     gpu = detect_gpu_info()
     has_nvenc = detect_nvenc()
+
+    # Warm the preset cache so first recording starts instantly.
+    resolved_preset = nvenc_preset_cfg
+    if has_nvenc and nvenc_preset_cfg in ("auto", ""):
+        resolved_preset = recommend_preset(num_cameras=num_cams, target_fps=fps)
+    elif not has_nvenc:
+        resolved_preset = "veryfast"
 
     w = 55
     lines = [
@@ -581,7 +592,7 @@ def _log_system_banner(recorder, config_name: str):
         lines.append("  GPU          not detected")
 
     if has_nvenc:
-        lines.append(f"  Encoder      h264_nvenc (preset: {nvenc_preset}, VBR CQ=24)")
+        lines.append(f"  Encoder      h264_nvenc (preset: {resolved_preset}, VBR CQ=24)")
     else:
         lines.append("  Encoder      libx264 (CPU, preset: veryfast, CRF=18)")
 

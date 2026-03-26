@@ -134,6 +134,10 @@ def encoder_worker(
                 base_filename = frame["base_filename"]
 
                 # Segment boundary: close old ffmpeg, open new one.
+                # This blocks briefly (~100-500ms) while ffmpeg flushes its encoder
+                # buffers.  We do this synchronously because NVENC on consumer GPUs
+                # (GTX 1650) limits concurrent encode sessions — closing in the
+                # background would double the session count and risk hitting the cap.
                 if base_filename != current_base:
                     _close_ffmpeg(proc)
                     proc = None

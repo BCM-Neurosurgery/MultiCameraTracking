@@ -16,9 +16,12 @@ from multi_camera.acquisition.flir.storage.finalize_jobs_repo import FinalizeJob
 from multi_camera.acquisition.flir.workers.encoder_worker import encoder_worker
 from multi_camera.acquisition.flir.workers.metadata_workers import metadata_finalize_queue, write_metadata_queue
 
-# Image queue buffer: absorbs transient stalls (segment rollover, disk flush, GPU jitter).
-# 30 frames = 1 second at 30 fps. Should hover near empty during normal operation.
-_IMAGE_QUEUE_SIZE = 30
+# Default image queue buffer: absorbs transient stalls (segment rollover, disk flush, GPU jitter).
+# 150 frames = 5 seconds at 30 fps (~2.3 MB/frame × 150 = ~345 MB per camera).
+# With 8 cameras: ~2.76 GB total.  Sized to absorb ~1.5-2.5s segment boundary
+# stalls even with 8 cameras and disk contention.  Hovers near empty during
+# normal operation.  Override via acquisition-settings.image_queue_size in config YAML.
+_DEFAULT_IMAGE_QUEUE_SIZE = 150
 
 
 @dataclass
@@ -41,7 +44,9 @@ class RecorderService:
 
     def initialize_queues(self, max_frames: int):
         camera_serials = [camera.DeviceSerialNumber for camera in self.recorder.cams]
-        queues = build_recorder_queues(camera_serials=camera_serials, frame_queue_size=_IMAGE_QUEUE_SIZE)
+        acq_settings = (self.recorder.camera_config or {}).get("acquisition-settings", {})
+        queue_size = int(acq_settings.get("image_queue_size", _DEFAULT_IMAGE_QUEUE_SIZE))
+        queues = build_recorder_queues(camera_serials=camera_serials, frame_queue_size=queue_size)
         self.recorder.image_queue_dict = queues.image_queues
         self.recorder.json_queue = queues.metadata_queue
         self.recorder.records_queue = queues.records_queue
