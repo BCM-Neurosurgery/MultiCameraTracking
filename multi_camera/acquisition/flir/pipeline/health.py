@@ -17,15 +17,11 @@ class PipelineHealth:
         self._lock = threading.Lock()
         self.cameras_active = num_cameras
         self.dropped_frames = 0
-        self.encode_backlog = 0
         self.error_count = 0
 
     def inc_dropped(self):
         with self._lock:
             self.dropped_frames += 1
-
-    def set_encode_backlog(self, n: int):
-        self.encode_backlog = n  # single-writer, atomic on CPython
 
     def inc_errors(self):
         with self._lock:
@@ -35,4 +31,4 @@ class PipelineHealth:
         """One-line status string for ``tqdm.set_postfix_str()``."""
         ok = self.error_count == 0 and self.dropped_frames == 0
         icon = "OK" if ok else "!!"
-        return f"{icon} {self.cameras_active} cams | {self.dropped_frames} drops | backlog: {self.encode_backlog} | {self.error_count} errs"
+        return f"{icon} {self.cameras_active} cams | {self.dropped_frames} drops | {self.error_count} errs"

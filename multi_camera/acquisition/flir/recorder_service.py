@@ -10,23 +10,27 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger("flir_pipeline")
 
+from multi_camera.acquisition.flir.gpu_detect import detect_nvenc, detect_gpu_info, recommend_preset
 from multi_camera.acquisition.flir.pipeline.queues import build_recorder_queues
-from multi_camera.acquisition.flir.storage.encode_jobs_repo import EncodeJobsRepo, get_encode_jobs_db_path
 from multi_camera.acquisition.flir.storage.finalize_jobs_repo import FinalizeJobsRepo, get_finalize_jobs_db_path
-from multi_camera.acquisition.flir.workers.encode_worker import encode_jobs_worker
-from multi_camera.acquisition.flir.workers.journal_writer_worker import write_journal_queue
+from multi_camera.acquisition.flir.workers.encoder_worker import encoder_worker
 from multi_camera.acquisition.flir.workers.metadata_workers import metadata_finalize_queue, write_metadata_queue
+
+# Image queue buffer: absorbs transient stalls (segment rollover, disk flush, GPU jitter).
+# 30 frames = 1 second at 30 fps. Should hover near empty during normal operation.
+_IMAGE_QUEUE_SIZE = 30
 
 
 @dataclass
 class WorkerHandles:
     image_threads: list[threading.Thread] = field(default_factory=list)
     image_flush_events: list[threading.Event] = field(default_factory=list)
-    encode_threads: list[threading.Thread] = field(default_factory=list)
     metadata_writer_thread: threading.Thread | None = None
     metadata_flush_event: threading.Event | None = None
     metadata_finalize_thread: threading.Thread | None = None
     writers_started: bool = False
+    use_nvenc: bool = False
+    preset: str = ""
 
 
 class RecorderService:
@@ -37,16 +41,59 @@ class RecorderService:
 
     def initialize_queues(self, max_frames: int):
         camera_serials = [camera.DeviceSerialNumber for camera in self.recorder.cams]
-        queues = build_recorder_queues(camera_serials=camera_serials, frame_queue_size=max_frames)
+        queues = build_recorder_queues(camera_serials=camera_serials, frame_queue_size=_IMAGE_QUEUE_SIZE)
         self.recorder.image_queue_dict = queues.image_queues
         self.recorder.json_queue = queues.metadata_queue
         self.recorder.records_queue = queues.records_queue
+
+    def _detect_encoder(self) -> tuple[bool, str]:
+        """Detect GPU and choose encoder settings.
+
+        Returns (use_nvenc, preset).  Respects config overrides:
+        - ``nvenc_preset: "cpu"`` → force CPU fallback
+        - ``nvenc_preset: "p1"``..``"p7"`` → use that preset
+        - ``nvenc_preset: "auto"`` or absent → auto-detect and benchmark
+        """
+        # Check for env var override first.
+        if os.environ.get("FORCE_CPU_ENCODE", "").lower() in ("1", "true", "yes"):
+            log.info("FORCE_CPU_ENCODE set — using CPU encoder")
+            return False, "veryfast"
+
+        # Check config file override.
+        config_preset = ""
+        if self.recorder.camera_config:
+            config_preset = self.recorder.camera_config.get("acquisition-settings", {}).get("nvenc_preset", "auto")
+
+        if config_preset == "cpu":
+            log.info("nvenc_preset=cpu in config — using CPU encoder")
+            return False, "veryfast"
+
+        # Check if NVENC is available.
+        if not detect_nvenc():
+            log.warning("NVENC not available — using CPU encoder (frames may drop with many cameras)")
+            return False, "veryfast"
+
+        gpu_info = detect_gpu_info()
+        if gpu_info:
+            log.info("GPU: %s, VRAM: %d MB, driver: %s", gpu_info.get("name", "?"), gpu_info.get("vram_mb", 0), gpu_info.get("driver", "?"))
+
+        # Explicit preset from config.
+        if config_preset and config_preset != "auto":
+            log.info("nvenc_preset=%s from config", config_preset)
+            return True, config_preset
+
+        # Auto-detect: benchmark to find optimal preset.
+        num_cameras = len(self.recorder.cams)
+        preset = recommend_preset(num_cameras=num_cameras)
+        log.info("auto-selected preset: %s for %d cameras", preset, num_cameras)
+        return True, preset
 
     def start_workers(self, config_metadata: dict) -> WorkerHandles:
         handles = WorkerHandles()
         if self.recorder.video_base_file is None:
             return handles
 
+        # --- Metadata finalize jobs (unchanged) ---
         finalize_base_dir = self.recorder.video_path if getattr(self.recorder, "video_path", "") else "."
         self.recorder.finalize_jobs_db = get_finalize_jobs_db_path(finalize_base_dir)
         repo = FinalizeJobsRepo(self.recorder.finalize_jobs_db)
@@ -57,48 +104,32 @@ class RecorderService:
         repo.reset_in_progress_jobs(conn)
         conn.close()
 
-        encode_base_dir = self.recorder.video_path if getattr(self.recorder, "video_path", "") else "."
-        self.recorder.encode_jobs_db = get_encode_jobs_db_path(encode_base_dir)
-        encode_repo = EncodeJobsRepo(self.recorder.encode_jobs_db)
-        encode_repo.init_db()
-        self.recorder.encode_stop_event = threading.Event()
+        # --- Detect encoder ---
+        use_nvenc, preset = self._detect_encoder()
+        handles.use_nvenc = use_nvenc
+        handles.preset = preset
 
-        # Reset stale in_progress jobs ONCE before any worker starts.
-        # Workers must not call this themselves — with ENCODE_WORKERS > 1,
-        # a late-starting worker would reset jobs already claimed by earlier workers.
-        conn = encode_repo.connect()
-        encode_repo.reset_in_progress_jobs(conn)
-        conn.close()
+        # A shared stop_event for encoder threads (checked on queue.Empty timeout).
+        self.recorder.encoder_stop_event = threading.Event()
 
-        num_encode_workers = int(os.environ.get("ENCODE_WORKERS", "3"))
-        for idx in range(max(1, num_encode_workers)):
-            worker_id = f"encode_worker_{idx}"
-            thread = threading.Thread(
-                name=worker_id,
-                target=encode_jobs_worker,
-                kwargs={
-                    "encode_jobs_db": self.recorder.encode_jobs_db,
-                    "stop_event": self.recorder.encode_stop_event,
-                    "worker_id": worker_id,
-                },
-            )
-            thread.start()
-            handles.encode_threads.append(thread)
-
+        # --- Spawn one encoder thread per camera ---
         for camera in self.recorder.cams:
             serial = camera.DeviceSerialNumber
             flush_event = threading.Event()
             thread = threading.Thread(
-                name=f"write_image_{serial}",
-                target=write_journal_queue,
+                name=f"encoder_{serial}",
+                target=encoder_worker,
                 kwargs={
                     "image_queue": self.recorder.image_queue_dict[serial],
                     "serial": serial,
                     "pixel_format": self.recorder.pixel_format,
                     "acquisition_fps": camera.AcquisitionFrameRate,
-                    "encode_jobs_db": self.recorder.encode_jobs_db,
+                    "width": int(camera.Width),
+                    "height": int(camera.Height),
+                    "use_nvenc": use_nvenc,
+                    "preset": preset,
                     "worker_error_state": self.recorder.writer_error,
-                    "stop_event": self.recorder.encode_stop_event,
+                    "stop_event": self.recorder.encoder_stop_event,
                     "flush_done_event": flush_event,
                 },
             )
@@ -106,6 +137,7 @@ class RecorderService:
             handles.image_threads.append(thread)
             handles.image_flush_events.append(flush_event)
 
+        # --- Metadata workers (unchanged) ---
         handles.metadata_finalize_thread = threading.Thread(
             name="write_metadata_finalize",
             target=metadata_finalize_queue,
@@ -139,32 +171,19 @@ class RecorderService:
         if self.recorder.video_base_file is None or not handles.writers_started:
             return
 
-        # --- Phase 1: stop journal writers and wait for final flush ---
-        # Send sentinels so writers exit their loop and flush the last segment.
+        # --- Phase 1: stop encoder threads and wait for ffmpeg to finish ---
         for serial, image_queue in self.recorder.image_queue_dict.items():
             image_queue.put(None)
 
-        # Wait for each writer to finish flushing (enqueue its last encode job).
-        # flush_done_event is set in the writer's finally block, after the last
-        # encode job is in SQLite. The 30s timeout is a safety net only.
         for event in handles.image_flush_events:
             event.wait(timeout=30)
 
         for thread in handles.image_threads:
-            thread.join(timeout=5)
+            thread.join(timeout=10)
             if thread.is_alive():
                 log.warning("%s did not exit within timeout", thread.name)
 
-        # --- Phase 2: tell encode workers to drain and exit ---
-        # Safe: all encode jobs are now in SQLite.
-        # In-flight encodes run to completion before the worker exits.
-        self.recorder.encode_stop_event.set()
-        for thread in handles.encode_threads:
-            thread.join(timeout=60)
-            if thread.is_alive():
-                log.warning("%s did not exit within timeout", thread.name)
-
-        # --- Phase 3: stop metadata writer and wait for final flush ---
+        # --- Phase 2: stop metadata writer and wait for final flush ---
         if not self.recorder.writer_error["event"].is_set():
             self.recorder.json_queue.put(None)
         elif handles.metadata_writer_thread is not None and handles.metadata_writer_thread.is_alive():
@@ -181,8 +200,7 @@ class RecorderService:
             if handles.metadata_writer_thread.is_alive():
                 log.warning("%s did not exit within timeout", handles.metadata_writer_thread.name)
 
-        # --- Phase 4: tell finalize worker to drain and exit ---
-        # Safe: all finalize jobs are now in SQLite.
+        # --- Phase 3: tell finalize worker to drain and exit ---
         self.recorder.finalize_stop_event.set()
         if handles.metadata_finalize_thread is not None:
             handles.metadata_finalize_thread.join(timeout=20)

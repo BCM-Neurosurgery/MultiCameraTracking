@@ -312,11 +312,10 @@ class FlirRecorder:
             health = PipelineHealth(num_cameras=len(self.cams))
             log.info("recording started: %s", self.video_base_file)
             log.info(
-                "cameras: %d, fps: %s, segment: %s frames, encode_workers: %s",
+                "cameras: %d, fps: %s, segment: %s frames",
                 len(self.cams),
                 self.cams[0].AcquisitionFrameRate if self.cams else "?",
                 self.camera_config.get("acquisition-settings", {}).get("video_segment_len", "?"),
-                os.environ.get("ENCODE_WORKERS", "3"),
             )
             for cam in self.cams:
                 log.info("camera %s: %dx%d %s, exposure=%sus", cam.DeviceSerialNumber, cam.Width, cam.Height, cam.PixelFormat, cam.ExposureTime)
