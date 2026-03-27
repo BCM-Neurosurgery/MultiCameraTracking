@@ -336,10 +336,15 @@ def main():
     run_capacity(r, cfg, disk, total_bytes, report.wall_time_s)
     run_verdict(r, cfg, report, duration_min)
 
-    # Save reports before cleanup
+    # Next steps
+    r.log()
+    r.log("  Next: run a 10-min test recording with real cameras")
+    r.log("  to validate GigE network, PTP sync, and end-to-end.")
     r.log()
     r.row("Report saved", output_dir, "")
     r.log()
+
+    # Save reports before cleanup
     r.save(output_dir)
 
     # Delete test recordings (MP4s, metadata), keep only report.txt + report.json.

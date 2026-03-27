@@ -74,3 +74,10 @@ These require physical cameras connected:
 - IEEE1588 PTP synchronization
 - Camera hardware reliability
 - Arduino trigger / GPIO behavior
+
+## Recommended Deployment Workflow
+
+1. **`make build`** — build the Docker image
+2. **`make validate`** — hardware + pipeline validation (no cameras needed)
+3. **10-min test recording** — connect cameras, start recording through the web UI, verify output plays back correctly
+4. **24h soak** (optional) — leave running overnight with `make validate DURATION=86400` to catch memory leaks or thermal issues that only appear at scale
