@@ -31,7 +31,21 @@ def check_nvenc() -> bool:
     """Return True if h264_nvenc is functional (single-session test encode)."""
     try:
         r = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.04", "-c:v", "h264_nvenc", "-f", "null", "-"],
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "nullsrc=s=1920x1200:d=0.04",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ],
             capture_output=True,
             timeout=10,
         )
@@ -51,7 +65,7 @@ def check_nvenc_concurrent(num_sessions: int) -> tuple[bool, int]:
         "-f",
         "lavfi",
         "-i",
-        "nullsrc=s=64x64:d=0.5",
+        "nullsrc=s=1920x1200:d=0.5",
         "-c:v",
         "h264_nvenc",
         "-f",

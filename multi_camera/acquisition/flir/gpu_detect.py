@@ -36,7 +36,7 @@ def detect_nvenc() -> bool:
                 "-f",
                 "lavfi",
                 "-i",
-                "nullsrc=s=64x64:d=0.04",
+                "nullsrc=s=1920x1200:d=0.04",
                 "-c:v",
                 "h264_nvenc",
                 "-f",

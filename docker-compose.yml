@@ -8,6 +8,7 @@ services:
     tty: true
     stdin_open: true
     environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
       REACT_APP_BASE_URL: ${REACT_APP_BASE_URL}
       PYTHONUNBUFFERED: 1
       PROJECT_IDS: ${PROJECT_IDS:-TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036,TEST-XXXXX}
