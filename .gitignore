@@ -40,5 +40,6 @@ docker/flir
 notebooks/
 
 results/
+validation/
 
 .env
