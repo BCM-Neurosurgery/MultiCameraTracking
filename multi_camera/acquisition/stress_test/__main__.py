@@ -1,60 +1,40 @@
 """Deployment validation for the FLIR recording pipeline.
 
-Loads the real camera config YAML, runs hardware checks, disk I/O benchmark,
-a full pipeline stress test with worst-case frames, and verifies output integrity.
-
 Usage:
-    make validate                          # uses default camera_config.yaml
-    make validate CONFIG=my_config.yaml    # use a specific config
+    make validate                          # camera_config.yaml, 5-min soak
+    make validate CONFIG=my_config.yaml    # specific config
     make validate DURATION=600             # 10-minute soak
 """
 
 import argparse
 import glob
-import json
 import os
 import shutil
 import signal
-import subprocess
 import sys
-import time
 from datetime import datetime
 
 import yaml
 
+from multi_camera.acquisition.stress_test._preflight import (
+    check_gpu,
+    check_nvenc,
+    check_nvenc_concurrent,
+    check_ram,
+    check_fd_limits,
+    check_disk,
+    detect_volume_type,
+    benchmark_disk_write,
+    benchmark_disk_metadata,
+)
 from multi_camera.acquisition.stress_test._runner import run_stress_test
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-W = 60
-PASS = "\033[92m✓\033[0m"
-FAIL = "\033[91m✗\033[0m"
-WARN = "\033[93m!\033[0m"
-
-
-def _header(title: str):
-    print()
-    print("═" * W)
-    print(f"  {title}")
-    print("═" * W)
-
-
-def _row(label: str, value: str, status: str = ""):
-    print(f"  {label:<18s} {value:<28s} {status}")
-
-
-# ---------------------------------------------------------------------------
-# Config loader
-# ---------------------------------------------------------------------------
+from multi_camera.acquisition.stress_test._verify import verify_mp4_files, verify_metadata_files
+from multi_camera.acquisition.stress_test._report import Report, PASS, FAIL, WARN
 
 
 def load_config(config_path: str) -> dict:
-    """Load camera config YAML and extract validation parameters."""
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
-
     acq = cfg.get("acquisition-settings", {})
     return {
         "raw": cfg,
@@ -71,416 +51,300 @@ def load_config(config_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# System checks
+# Phase runners
 # ---------------------------------------------------------------------------
 
 
-def check_gpu() -> dict:
-    try:
-        r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if r.returncode != 0:
-            return {}
-        parts = [p.strip() for p in r.stdout.strip().split(",")]
-        if len(parts) < 4:
-            return {}
-        return {"name": parts[0], "vram_total_mb": int(float(parts[1])), "vram_free_mb": int(float(parts[2])), "driver": parts[3]}
-    except Exception:
-        return {}
+def run_preflight(r: Report, cfg: dict, data_volume: str):
+    r.header("Phase 1: Preflight")
+    n = cfg["num_cameras"]
 
-
-def check_nvenc() -> bool:
-    try:
-        r = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.04", "-c:v", "h264_nvenc", "-f", "null", "-"],
-            capture_output=True,
-            timeout=10,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def check_ram() -> dict:
-    try:
-        with open("/proc/meminfo") as f:
-            info = {}
-            for line in f:
-                parts = line.split()
-                if parts[0] in ("MemTotal:", "MemAvailable:"):
-                    info[parts[0].rstrip(":")] = int(parts[1]) // 1024
-        return {"total_mb": info.get("MemTotal", 0), "available_mb": info.get("MemAvailable", 0)}
-    except Exception:
-        return {"total_mb": 0, "available_mb": 0}
-
-
-def check_disk(path: str) -> dict:
-    try:
-        usage = shutil.disk_usage(path)
-        return {"total_gb": usage.total / 1e9, "free_gb": usage.free / 1e9}
-    except Exception:
-        return {"total_gb": 0, "free_gb": 0}
-
-
-def benchmark_disk_write(path: str, size_mb: int = 256) -> float:
-    os.makedirs(path, exist_ok=True)
-    test_file = os.path.join(path, ".disk_benchmark")
-    block = os.urandom(1024 * 1024)
-    try:
-        t0 = time.monotonic()
-        with open(test_file, "wb") as f:
-            for _ in range(size_mb):
-                f.write(block)
-            f.flush()
-            os.fsync(f.fileno())
-        elapsed = time.monotonic() - t0
-        return size_mb / elapsed if elapsed > 0 else 0
-    except Exception:
-        return 0
-    finally:
-        try:
-            os.remove(test_file)
-        except OSError:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# Output verification
-# ---------------------------------------------------------------------------
-
-
-def verify_mp4_files(output_dir: str, num_cameras: int, expected_segments: int) -> tuple[list[str], int]:
-    issues = []
-    total_bytes = 0
-    mp4s = sorted(glob.glob(os.path.join(output_dir, "*.mp4")))
-
-    if not mp4s:
-        issues.append("No MP4 files produced")
-        return issues, 0
-
-    expected_mp4s = num_cameras * expected_segments
-    if len(mp4s) < expected_mp4s:
-        issues.append(f"Expected {expected_mp4s} MP4s ({num_cameras} cams × {expected_segments} seg), got {len(mp4s)}")
-
-    corrupt = 0
-    for mp4 in mp4s:
-        total_bytes += os.path.getsize(mp4)
-        try:
-            r = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration,nb_streams", "-of", "csv=p=0", mp4],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if r.returncode != 0 or not r.stdout.strip():
-                corrupt += 1
-        except Exception:
-            corrupt += 1
-
-    if corrupt > 0:
-        issues.append(f"{corrupt}/{len(mp4s)} MP4 files failed ffprobe validation")
-
-    return issues, total_bytes
-
-
-def verify_metadata_files(output_dir: str, expected_segments: int, segment_frames: int) -> list[str]:
-    issues = []
-    jsonl_files = sorted(glob.glob(os.path.join(output_dir, "*.metadata.jsonl")))
-
-    if not jsonl_files:
-        issues.append("No .metadata.jsonl files produced")
-        return issues
-
-    if len(jsonl_files) < expected_segments:
-        issues.append(f"Expected {expected_segments} metadata journals, found {len(jsonl_files)}")
-
-    for jsonl_path in jsonl_files:
-        line_count = 0
-        parse_errors = 0
-        try:
-            with open(jsonl_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    line_count += 1
-                    try:
-                        record = json.loads(line)
-                        if "camera_serials" not in record or "timestamps" not in record:
-                            parse_errors += 1
-                    except json.JSONDecodeError:
-                        parse_errors += 1
-        except Exception as e:
-            issues.append(f"Could not read {os.path.basename(jsonl_path)}: {e}")
-            continue
-
-        if parse_errors > 0:
-            issues.append(f"{os.path.basename(jsonl_path)}: {parse_errors}/{line_count} lines failed JSON parse")
-
-    # Verify aggregate JSON files
-    json_files = sorted(glob.glob(os.path.join(output_dir, "*.json")))
-    for json_path in json_files:
-        if json_path.endswith(".metadata.jsonl"):
-            continue
-        try:
-            with open(json_path) as f:
-                data = json.load(f)
-            if "real_times" not in data or "timestamps" not in data:
-                issues.append(f"{os.path.basename(json_path)}: missing expected fields")
-        except json.JSONDecodeError as e:
-            issues.append(f"{os.path.basename(json_path)}: invalid JSON — {e}")
-        except Exception as e:
-            issues.append(f"{os.path.basename(json_path)}: {e}")
-
-    return issues
-
-
-def save_report(output_dir: str, lines: list[str]):
-    """Save the validation report as a plain text file."""
-    report_path = os.path.join(output_dir, "report.txt")
-    # Strip ANSI color codes for the text file
-    import re
-
-    ansi_escape = re.compile(r"\033\[[0-9;]*m")
-    with open(report_path, "w") as f:
-        f.write(f"Deployment Validation — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        for line in lines:
-            f.write(ansi_escape.sub("", line) + "\n")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Deployment validation — load camera config, test hardware + pipeline, verify outputs",
-    )
-    parser.add_argument("--config", type=str, required=True, help="Path to camera config YAML (e.g. /configs/camera_config.yaml)")
-    parser.add_argument("-d", "--duration", type=float, default=300.0, help="Stress test duration in seconds (default: 300 = 5 min)")
-    parser.add_argument("-o", "--output-base", type=str, default="/data/validation", help="Base output directory (default: /data/validation)")
-    parser.add_argument("--data-volume", type=str, default="/data", help="Data volume to benchmark disk I/O against (default: /data)")
-    parser.add_argument("--force-cpu", action="store_true", help="Force CPU encoding")
-    args = parser.parse_args()
-
-    if args.force_cpu:
-        os.environ["FORCE_CPU_ENCODE"] = "1"
-
-    signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))
-
-    # ── Load config ─────────────────────────────────────────────
-    cfg = load_config(args.config)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join(args.output_base, f"{timestamp}_{cfg['config_name']}")
-    os.makedirs(output_dir, exist_ok=True)
-
-    report_lines = []
-
-    def log(line=""):
-        print(line)
-        report_lines.append(line)
-
-    def header(title):
-        log()
-        log("═" * W)
-        log(f"  {title}")
-        log("═" * W)
-
-    def row(label, value, status=""):
-        line = f"  {label:<18s} {value:<28s} {status}"
-        log(line)
-
-    issues = []
-    duration_min = args.duration / 60
-
-    # ── Config summary ──────────────────────────────────────────
-    header("Config")
-    row("File", cfg["config_name"] + ".yaml")
-    row("Cameras", str(cfg["num_cameras"]))
-    row("Frame Rate", f"{cfg['fps']} FPS")
-    row("Exposure", f"{cfg['exposure']} µs")
-    row("Gamma", str(cfg["gamma"]) if cfg["gamma"] is not None else "disabled")
-    row("Segment", f"{cfg['segment_frames']} frames")
-    row("NVENC Preset", cfg["nvenc_preset"])
-    row("Queue Size", str(cfg["queue_size"]))
-    row("Test Duration", f"{duration_min:.0f} min")
-
-    # ── 1. Hardware ─────────────────────────────────────────────
-    header("1/5  Hardware")
-
+    # GPU + NVENC
     gpu = check_gpu()
     if gpu:
-        row("GPU", gpu["name"], PASS)
-        row("VRAM", f"{gpu['vram_total_mb']} MB total, {gpu['vram_free_mb']} MB free", PASS)
-        row("Driver", gpu["driver"], PASS)
+        r.row("GPU", gpu["name"], PASS)
+        r.row("VRAM", f"{gpu['vram_total_mb']} MB total, {gpu['vram_free_mb']} MB free", PASS)
+        r.row("Driver", gpu["driver"], PASS)
     else:
-        row("GPU", "not detected", FAIL)
-        issues.append("No GPU detected — will fall back to CPU encoding (slow)")
+        r.row("GPU", "not detected", FAIL)
+        r.issue("No GPU detected — CPU encoding only (slow, may not sustain load)")
 
     has_nvenc = check_nvenc()
     if has_nvenc:
-        row("NVENC", "h264_nvenc available", PASS)
+        r.row("NVENC", "h264_nvenc available", PASS)
     else:
-        row("NVENC", "not available", FAIL if gpu else WARN)
+        r.row("NVENC", "not available", FAIL if gpu else WARN)
         if gpu:
-            issues.append("GPU present but NVENC failed — check driver/container GPU passthrough")
-        else:
-            issues.append("No NVENC — CPU encoding only")
+            r.issue("GPU present but NVENC failed — check driver/container GPU passthrough")
 
+    if has_nvenc and n > 1:
+        r.log(f"  Testing {n} concurrent NVENC sessions...")
+        all_ok, count = check_nvenc_concurrent(n)
+        r.check("NVENC Sessions", f"{count}/{n} OK", good=all_ok, bad=not all_ok)
+        if not all_ok:
+            r.issue(f"GPU supports only {count} concurrent NVENC sessions, need {n}")
+
+    # RAM
     ram = check_ram()
-    queue_ram_mb = cfg["num_cameras"] * cfg["queue_size"] * 2.3
-    total_ram_needed_mb = queue_ram_mb + 2048
-    if ram["available_mb"] > total_ram_needed_mb:
-        row("RAM", f"{ram['total_mb']} MB total, {ram['available_mb']} MB avail", PASS)
-    else:
-        row("RAM", f"{ram['total_mb']} MB total, {ram['available_mb']} MB avail", WARN)
-        issues.append(f"RAM ({ram['available_mb']} MB) tight for {cfg['num_cameras']} cameras (need ~{total_ram_needed_mb:.0f} MB)")
+    needed_mb = n * cfg["queue_size"] * 2.3 + 2048
+    r.check("RAM", f"{ram['total_mb']} MB total, {ram['available_mb']} MB avail", good=ram["available_mb"] > needed_mb)
+    if ram["available_mb"] <= needed_mb:
+        r.issue(f"RAM ({ram['available_mb']} MB) tight for {n} cameras (need ~{needed_mb:.0f} MB)")
 
+    # CPU + FD limits
     cpu_count = os.cpu_count() or 1
-    row("CPU", f"{cpu_count} cores", PASS if cpu_count >= 4 else WARN)
+    r.check("CPU", f"{cpu_count} cores", good=cpu_count >= 4)
 
-    # ── 2. Disk ─────────────────────────────────────────────────
-    header("2/5  Disk I/O")
+    fd = check_fd_limits(n)
+    r.check("FD Limit", f"{fd['soft']} (need {fd['required']})", good=fd["sufficient"])
+    if not fd["sufficient"]:
+        r.issue(f"File descriptor limit ({fd['soft']}) low for {n} cameras (need {fd['required']})")
 
-    disk = check_disk(args.data_volume)
-    if disk["free_gb"] > 100:
-        row("Free Space", f"{disk['free_gb']:.0f} GB ({args.data_volume})", PASS)
-    elif disk["free_gb"] > 10:
-        row("Free Space", f"{disk['free_gb']:.0f} GB ({args.data_volume})", WARN)
-        issues.append(f"Low disk: {disk['free_gb']:.0f} GB on {args.data_volume}")
-    else:
-        row("Free Space", f"{disk['free_gb']:.1f} GB ({args.data_volume})", FAIL)
-        issues.append(f"Very low disk: {disk['free_gb']:.1f} GB on {args.data_volume}")
+    # Disk: volume type
+    fs_type = detect_volume_type(data_volume)
+    is_network_fs = fs_type in ("nfs", "nfs4", "cifs", "smb")
+    r.check("Volume Type", f"{fs_type}{' (network)' if is_network_fs else ''}", good=not is_network_fs)
+    if is_network_fs:
+        r.issue(f"Data volume is {fs_type} — SQLite WAL may fail; latency spikes expected")
 
-    log("  Benchmarking write speed on data volume...")
-    write_speed = benchmark_disk_write(args.data_volume, size_mb=256)
-    min_write_speed = cfg["num_cameras"] * 15
-    if write_speed > min_write_speed:
-        row("Write Speed", f"{write_speed:.0f} MB/s", PASS)
-    else:
-        row("Write Speed", f"{write_speed:.0f} MB/s", WARN)
-        issues.append(f"Disk write ({write_speed:.0f} MB/s) may be tight for {cfg['num_cameras']} cameras")
+    # Disk: space
+    disk = check_disk(data_volume)
+    r.check("Free Space", f"{disk['free_gb']:.0f} GB", good=disk["free_gb"] > 100, bad=disk["free_gb"] <= 10)
+    if disk["free_gb"] <= 100:
+        r.issue(f"Low disk: {disk['free_gb']:.0f} GB on {data_volume}")
 
-    # ── 3. Pipeline stress test ─────────────────────────────────
-    header("3/5  Pipeline Stress Test")
-    log(f"  {cfg['num_cameras']} cameras, {cfg['fps']} FPS, {duration_min:.0f} min, worst-case noise")
-    log(f"  Segment rollover every {cfg['segment_frames']} frames")
-    log()
+    # Disk: sequential write
+    r.log("  Benchmarking sequential write (256 MB)...")
+    write_mbps = benchmark_disk_write(data_volume, size_mb=256)
+    min_write = n * 15
+    r.check("Write Speed", f"{write_mbps:.0f} MB/s", good=write_mbps > min_write)
+    if write_mbps <= min_write:
+        r.issue(f"Disk write ({write_mbps:.0f} MB/s) tight for {n} cameras (need {min_write})")
+
+    # Disk: metadata ops
+    r.log("  Benchmarking metadata ops (500 file creates)...")
+    p99 = benchmark_disk_metadata(data_volume, num_files=500)
+    r.check("Metadata Latency", f"p99 = {p99:.1f} ms", good=p99 < 10, bad=p99 >= 50)
+    if p99 >= 50:
+        r.issue(f"Disk metadata latency high ({p99:.0f} ms p99) — segment rollovers may stall")
+
+    r.json_data["checks"]["preflight"] = {
+        "gpu": gpu,
+        "nvenc": has_nvenc,
+        "ram_available_mb": ram["available_mb"],
+        "fd_soft": fd["soft"],
+        "fs_type": fs_type,
+        "disk_free_gb": disk["free_gb"],
+        "write_speed_mbps": write_mbps,
+        "metadata_p99_ms": p99,
+    }
+    return disk
+
+
+def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, duration_s: float):
+    duration_min = duration_s / 60
+    r.header("Phase 2: Soak Test")
+    r.log(f"  {cfg['num_cameras']} cameras, {cfg['fps']} FPS, {duration_min:.0f} min")
+    r.log(f"  Worst-case noise frames, segment rollover every {test_segment_frames} frames")
+    r.log()
 
     report = run_stress_test(
         num_cameras=cfg["num_cameras"],
         fps=cfg["fps"],
-        duration_s=args.duration,
+        duration_s=duration_s,
         output_dir=output_dir,
         queue_size=cfg["queue_size"],
-        segment_frames=cfg["segment_frames"],
+        segment_frames=test_segment_frames,
     )
+    r.log()
 
-    log()
-    if report.dropped_frames == 0:
-        row("Drops", "0", PASS)
-    else:
-        drop_rate = report.dropped_frames / max(1, report.total_frames_produced * cfg["num_cameras"]) * 100
-        row("Drops", f"{report.dropped_frames} ({drop_rate:.2f}%)", FAIL)
-        issues.append(f"{report.dropped_frames} frames dropped during {duration_min:.0f}-min stress test")
+    # Drops
+    r.check("Drops", str(report.dropped_frames), good=report.dropped_frames == 0, bad=report.dropped_frames > 0)
+    if report.dropped_frames > 0:
+        rate = report.dropped_frames / max(1, report.total_frames_produced * cfg["num_cameras"]) * 100
+        r.issue(f"{report.dropped_frames} frames dropped ({rate:.2f}%) during {duration_min:.0f}-min soak")
 
+    # Queue utilization
     max_depth = max(report.max_queue_depth.values()) if report.max_queue_depth else 0
-    queue_pct = max_depth / cfg["queue_size"] * 100
-    if queue_pct < 50:
-        row("Max Queue", f"{max_depth}/{cfg['queue_size']} ({queue_pct:.0f}%)", PASS)
-    elif queue_pct < 90:
-        row("Max Queue", f"{max_depth}/{cfg['queue_size']} ({queue_pct:.0f}%)", WARN)
-        issues.append(f"Queue reached {queue_pct:.0f}% — risk of drops under sustained load")
-    else:
-        row("Max Queue", f"{max_depth}/{cfg['queue_size']} ({queue_pct:.0f}%)", FAIL)
-        issues.append(f"Queue nearly full ({queue_pct:.0f}%) — will drop under sustained load")
+    pct = max_depth / cfg["queue_size"] * 100
+    r.check("Max Queue", f"{max_depth}/{cfg['queue_size']} ({pct:.0f}%)", good=pct < 50, bad=pct >= 90)
+    if pct >= 90:
+        r.issue(f"Queue nearly full ({pct:.0f}%)")
 
-    row("Encoder", report.encoder, PASS)
-    row("Segments", str(report.segments_completed), "")
+    r.row("Encoder", report.encoder, PASS)
+    r.row("Segments", str(report.segments_completed), "")
 
-    encoding_fps = report.total_frames_produced / report.wall_time_s if report.wall_time_s > 0 else 0
-    if encoding_fps >= cfg["fps"] * 0.95:
-        row("Throughput", f"{encoding_fps:.1f} FPS", PASS)
-    else:
-        row("Throughput", f"{encoding_fps:.1f} FPS (target: {cfg['fps']})", WARN)
+    # Segment boundary spike
+    if report.boundary_queue_depths:
+        worst = max(max(snap.values()) for snap in report.boundary_queue_depths)
+        bpct = worst / cfg["queue_size"] * 100
+        r.check("Boundary Spike", f"{worst}/{cfg['queue_size']} ({bpct:.0f}%)", good=bpct < 50, bad=bpct >= 80)
+        if bpct >= 80:
+            r.issue(f"Segment boundaries spike to {bpct:.0f}% queue capacity")
 
-    # ── 4. Output verification ──────────────────────────────────
-    header("4/5  Output Verification")
+    # GPU thermal
+    mon = report.monitor
+    if mon and mon.gpu_temp_samples:
+        t0 = mon.gpu_temp_samples[0][1]
+        r.check("GPU Temp", f"{t0}→{mon.gpu_max_temp}→{mon.gpu_final_temp}°C", good=not mon.gpu_throttled, bad=mon.gpu_throttled)
+        if mon.gpu_throttled:
+            r.issue(f"GPU reached {mon.gpu_max_temp}°C — thermal throttling likely")
 
-    log("  Verifying MP4 files (ffprobe)...")
-    mp4_issues, total_mp4_bytes = verify_mp4_files(output_dir, cfg["num_cameras"], report.segments_completed)
+    # Memory trend
+    if mon and len(mon.rss_samples) >= 2:
+        growth = mon.rss_growth_rate_mb_per_min
+        rss_start, rss_end = mon.rss_samples[0][1], mon.rss_samples[-1][1]
+        if growth < 1:
+            r.row("Memory Trend", f"{rss_start:.0f}→{rss_end:.0f} MB (stable)", PASS)
+        elif growth < 10:
+            r.row("Memory Trend", f"+{growth:.1f} MB/min", WARN)
+            r.issue(f"Memory growing at {growth:.1f} MB/min — possible leak")
+        else:
+            r.row("Memory Trend", f"+{growth:.1f} MB/min", FAIL)
+            r.issue(f"Memory growing at {growth:.1f} MB/min — likely leak, will OOM in 24/7")
+
+    r.json_data["checks"]["soak"] = {
+        "drops": report.dropped_frames,
+        "max_queue_depth": max_depth,
+        "segments": report.segments_completed,
+        "encoder": report.encoder,
+        "gpu_max_temp": mon.gpu_max_temp if mon else None,
+        "gpu_throttled": mon.gpu_throttled if mon else None,
+        "rss_growth_mb_per_min": mon.rss_growth_rate_mb_per_min if mon else None,
+    }
+    return report
+
+
+def run_verification(r: Report, cfg: dict, output_dir: str, report, test_segment_frames: int):
+    r.header("Phase 3: Output Verification")
+
+    r.log("  Verifying MP4 files (ffprobe)...")
+    mp4_issues, total_bytes = verify_mp4_files(output_dir, cfg["num_cameras"], report.segments_completed)
     mp4_count = len(glob.glob(os.path.join(output_dir, "*.mp4")))
     if not mp4_issues:
-        row("MP4 Files", f"{mp4_count} files, all playable", PASS)
+        r.row("MP4 Files", f"{mp4_count} files, all playable", PASS)
     else:
         for issue in mp4_issues:
-            row("MP4 Files", issue, FAIL)
-        issues.extend(mp4_issues)
+            r.row("MP4 Files", issue, FAIL)
+            r.issue(issue)
 
-    log("  Verifying metadata files...")
-    meta_issues = verify_metadata_files(output_dir, report.segments_completed, cfg["segment_frames"])
+    r.log("  Verifying metadata files...")
+    meta_issues = verify_metadata_files(output_dir, report.segments_completed)
     jsonl_count = len(glob.glob(os.path.join(output_dir, "*.metadata.jsonl")))
     json_count = len([f for f in glob.glob(os.path.join(output_dir, "*.json")) if not f.endswith(".metadata.jsonl")])
     if not meta_issues:
-        row("Metadata", f"{jsonl_count} journals + {json_count} JSON, valid", PASS)
+        r.row("Metadata", f"{jsonl_count} journals + {json_count} JSON, valid", PASS)
     else:
         for issue in meta_issues:
-            row("Metadata", issue, FAIL)
-        issues.extend(meta_issues)
+            r.row("Metadata", issue, FAIL)
+            r.issue(issue)
 
-    # ── 5. Capacity estimates ───────────────────────────────────
-    header("5/5  Capacity Estimates")
+    return total_bytes
 
-    if total_mp4_bytes > 0 and report.wall_time_s > 0:
-        bitrate_mbps = (total_mp4_bytes * 8) / report.wall_time_s / 1e6
-        per_cam_mbps = bitrate_mbps / cfg["num_cameras"]
-        row("Bitrate", f"{bitrate_mbps:.1f} Mbps ({per_cam_mbps:.1f}/cam)", "")
+
+def run_capacity(r: Report, cfg: dict, disk: dict, total_mp4_bytes: int, wall_time_s: float):
+    r.header("Capacity Estimates")
+
+    if total_mp4_bytes > 0 and wall_time_s > 0:
+        bitrate = (total_mp4_bytes * 8) / wall_time_s / 1e6
+        r.row("Bitrate", f"{bitrate:.1f} Mbps ({bitrate / cfg['num_cameras']:.1f}/cam)", "")
 
         if disk["free_gb"] > 1:
-            bytes_per_sec = total_mp4_bytes / report.wall_time_s
-            recording_hours = (disk["free_gb"] * 1e9) / bytes_per_sec / 3600
-            recording_days = recording_hours / 24
-            if recording_days >= 3:
-                row("Disk Capacity", f"~{recording_days:.0f} days of recording", PASS)
-            elif recording_days >= 1:
-                row("Disk Capacity", f"~{recording_days:.1f} days of recording", WARN)
-                issues.append(f"Only ~{recording_days:.1f} days of disk capacity")
-            else:
-                row("Disk Capacity", f"~{recording_hours:.1f} hours of recording", FAIL)
-                issues.append(f"Only ~{recording_hours:.1f} hours of disk capacity")
+            days = (disk["free_gb"] * 1e9) / (total_mp4_bytes / wall_time_s) / 86400
+            r.check("Disk Capacity", f"~{days:.0f} days" if days >= 1 else f"~{days * 24:.1f} hours", good=days >= 3, bad=days < 1)
+            if days < 3:
+                r.issue(f"Only ~{days:.1f} days of disk capacity")
 
     queue_gb = cfg["num_cameras"] * cfg["queue_size"] * 2.3 / 1024
-    row("Queue Memory", f"~{queue_gb:.1f} GB for {cfg['num_cameras']} cameras", "")
+    r.row("Queue Memory", f"~{queue_gb:.1f} GB for {cfg['num_cameras']} cameras", "")
 
-    # ── Verdict ─────────────────────────────────────────────────
-    log()
-    log("═" * W)
 
-    if not issues:
-        log(f"  {PASS} READY — validated for {cfg['num_cameras']}-camera 24/7 deployment")
-        log(f"  {PASS} {duration_min:.0f}-min soak: 0 drops, all outputs verified")
+def run_verdict(r: Report, cfg: dict, report, duration_min: float):
+    r.log()
+    r.log("═" * 60)
+
+    has_fatal = report.dropped_frames > 0 or any(kw in i.lower() for i in r.issues for kw in ("failed", "invalid", "not detected", "throttl", "leak"))
+
+    r.json_data["verdict"] = "FAIL" if has_fatal else ("WARN" if r.issues else "PASS")
+
+    if not r.issues:
+        mon = report.monitor
+        r.log(f"  {PASS} READY for {cfg['num_cameras']}-camera 24/7 deployment")
+        r.log(f"  {PASS} {duration_min:.0f}-min soak: 0 drops, {report.segments_completed} segments, all outputs valid")
+        if mon and mon.gpu_temp_samples:
+            r.log(f"  {PASS} GPU stable at {mon.gpu_final_temp}°C")
+        if mon and len(mon.rss_samples) >= 2:
+            r.log(f"  {PASS} Memory stable, no leaks")
     else:
-        has_fatal = report.dropped_frames > 0 or any("failed" in i.lower() for i in issues) or any("invalid" in i.lower() for i in issues)
         icon = FAIL if has_fatal else WARN
-        verdict = "NOT READY" if has_fatal else "READY WITH WARNINGS"
-        log(f"  {icon} {verdict} for {cfg['num_cameras']}-camera deployment")
-        log()
-        for issue in issues:
-            log(f"  {WARN} {issue}")
+        r.log(f"  {icon} {'NOT READY' if has_fatal else 'READY WITH WARNINGS'} for {cfg['num_cameras']}-camera deployment")
+        r.log()
+        for issue in r.issues:
+            r.log(f"    {WARN} {issue}")
 
-    log("═" * W)
-    log()
+    r.log("═" * 60)
 
-    row("Results saved", output_dir, "")
-    log()
 
-    # Save report text file
-    save_report(output_dir, report_lines)
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Deployment validation — hardware, disk, pipeline soak, output verification")
+    parser.add_argument("--config", type=str, required=True, help="Path to camera config YAML")
+    parser.add_argument("-d", "--duration", type=float, default=300.0, help="Soak duration in seconds (default: 300 = 5 min)")
+    parser.add_argument("--force-cpu", action="store_true", help="Force CPU encoding")
+    args = parser.parse_args()
+    args.data_volume = "/data"  # Always /data inside the container (mounted from $DATA_VOLUME)
+
+    if args.force_cpu:
+        os.environ["FORCE_CPU_ENCODE"] = "1"
+    signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))
+
+    cfg = load_config(args.config)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{timestamp}_{cfg['config_name']}"
+
+    # Everything goes to one directory on the data volume.
+    # Test recordings are deleted after verification; reports are kept.
+    output_dir = os.path.join(args.data_volume, "stress_test", run_name)
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir, ignore_errors=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Cap test segment size to ensure boundaries are exercised within the soak window
+    test_seg = min(cfg["segment_frames"], 1000) if cfg["segment_frames"] > 0 else 1000
+    duration_min = args.duration / 60
+
+    r = Report()
+    r.json_data["config"] = cfg["config_name"]
+    r.json_data["timestamp"] = timestamp
+
+    r.header("Deployment Validation")
+    r.log(f"  Config         {cfg['config_name']}.yaml")
+    r.log(f"  Cameras        {cfg['num_cameras']}  |  {cfg['fps']} FPS  |  {cfg['mode']}")
+    r.log(f"  Segment        {cfg['segment_frames']} frames (test: {test_seg})")
+    r.log(f"  Soak           {duration_min:.0f} min")
+
+    disk = run_preflight(r, cfg, args.data_volume)
+    report = run_soak(r, cfg, output_dir, test_seg, args.duration)
+    total_bytes = run_verification(r, cfg, output_dir, report, test_seg)
+    run_capacity(r, cfg, disk, total_bytes, report.wall_time_s)
+    run_verdict(r, cfg, report, duration_min)
+
+    # Save reports before cleanup
+    r.log()
+    r.row("Report saved", output_dir, "")
+    r.log()
+    r.save(output_dir)
+
+    # Delete test recordings (MP4s, metadata), keep only report.txt + report.json.
+    # Safety: only delete if path is under a stress_test/ directory we created.
+    if "/stress_test/" in output_dir:
+        for f in os.listdir(output_dir):
+            if not f.startswith("report."):
+                os.remove(os.path.join(output_dir, f))
 
 
 if __name__ == "__main__":

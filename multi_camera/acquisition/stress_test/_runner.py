@@ -1,9 +1,15 @@
-"""Stress test runner — exercises the full recording pipeline with synthetic frames."""
+"""Stress test runner — exercises the full recording pipeline with synthetic frames.
+
+Includes background monitoring of GPU temperature and process memory to detect
+thermal throttling and memory leaks during sustained operation.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
+import resource
+import subprocess
 import time
 import threading
 from dataclasses import dataclass, field
@@ -41,24 +47,9 @@ class StressRecorderShim:
     """Lightweight stand-in for FlirRecorder — provides every attribute that
     RecorderService, encoder_worker, and metadata workers read."""
 
-    def __init__(
-        self,
-        num_cameras: int,
-        fps: float,
-        width: int,
-        height: int,
-        output_dir: str,
-        queue_size: int,
-        segment_frames: int,
-    ):
+    def __init__(self, num_cameras: int, fps: float, width: int, height: int, output_dir: str, queue_size: int, segment_frames: int):
         self.cams = [
-            FakeCamera(
-                DeviceSerialNumber=f"STRESS_{i:02d}",
-                AcquisitionFrameRate=fps,
-                Width=width,
-                Height=height,
-            )
-            for i in range(num_cameras)
+            FakeCamera(DeviceSerialNumber=f"STRESS_{i:02d}", AcquisitionFrameRate=fps, Width=width, Height=height) for i in range(num_cameras)
         ]
         self.pixel_format = "BayerRG8"
 
@@ -85,7 +76,6 @@ class StressRecorderShim:
         self.gpio_settings = self.camera_config["gpio-settings"]
         self.config_file = "stress_test"
 
-        # Mutable state set by RecorderService during start_workers
         self.image_queue_dict: dict = {}
         self.json_queue = None
         self.records_queue = None
@@ -108,6 +98,92 @@ class StressRecorderShim:
 
 
 # ---------------------------------------------------------------------------
+# Background monitor — GPU temp + process RSS
+# ---------------------------------------------------------------------------
+
+
+def _get_gpu_temp() -> int | None:
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode == 0:
+            return int(r.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def _get_rss_mb() -> float:
+    try:
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        return ru.ru_maxrss / 1024  # Linux: kB → MB
+    except Exception:
+        return 0.0
+
+
+class PipelineMonitor:
+    """Background thread that samples GPU temp and process RSS every *interval_s* seconds."""
+
+    def __init__(self, interval_s: float = 10.0):
+        self.interval_s = interval_s
+        self.gpu_temp_samples: list[tuple[float, int]] = []  # (elapsed_s, temp_c)
+        self.rss_samples: list[tuple[float, float]] = []  # (elapsed_s, rss_mb)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._t0 = 0.0
+
+    def start(self):
+        self._t0 = time.monotonic()
+        self._sample()  # initial sample
+        self._thread = threading.Thread(target=self._run, daemon=True, name="pipeline_monitor")
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+        self._sample()  # final sample
+
+    def _sample(self):
+        elapsed = time.monotonic() - self._t0
+        temp = _get_gpu_temp()
+        if temp is not None:
+            self.gpu_temp_samples.append((elapsed, temp))
+        self.rss_samples.append((elapsed, _get_rss_mb()))
+
+    def _run(self):
+        while not self._stop.wait(self.interval_s):
+            self._sample()
+
+    @property
+    def gpu_max_temp(self) -> int:
+        return max((t for _, t in self.gpu_temp_samples), default=0)
+
+    @property
+    def gpu_final_temp(self) -> int:
+        return self.gpu_temp_samples[-1][1] if self.gpu_temp_samples else 0
+
+    @property
+    def gpu_throttled(self) -> bool:
+        return self.gpu_max_temp >= 83
+
+    @property
+    def rss_growth_rate_mb_per_min(self) -> float:
+        if len(self.rss_samples) < 2:
+            return 0.0
+        first_t, first_rss = self.rss_samples[0]
+        last_t, last_rss = self.rss_samples[-1]
+        elapsed_min = (last_t - first_t) / 60
+        if elapsed_min < 0.5:
+            return 0.0
+        return (last_rss - first_rss) / elapsed_min
+
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
@@ -127,35 +203,10 @@ class StressReport:
     segments_completed: int
     segment_frames: int
     output_dir: str
-
-    def print_summary(self):
-        w = 55
-        print()
-        print("═" * w)
-        print("  Stress Test Results".center(w))
-        print("═" * w)
-        print(f"  Cameras        {self.num_cameras}")
-        print(f"  Target FPS     {self.target_fps}")
-        print(f"  Actual FPS     {self.actual_fps:.1f}")
-        print(f"  Duration       {self.wall_time_s:.1f}s")
-        print(f"  Frames/cam     {self.total_frames_produced}")
-        print(f"  Segments       {self.segments_completed}")
-        print("─" * w)
-        print(f"  Encoder        {self.encoder}")
-        print(f"  Dropped        {self.dropped_frames}")
-        drop_rate = self.dropped_frames / max(1, self.total_frames_produced * self.num_cameras) * 100
-        print(f"  Drop Rate      {drop_rate:.2f}%")
-        print("─" * w)
-        print("  Max Queue Depth (per camera):")
-        for serial, depth in sorted(self.max_queue_depth.items()):
-            print(f"    {serial:>12s}   {depth}")
-        print("═" * w)
-
-        if self.dropped_frames == 0:
-            print("  PASS — zero drops under worst-case load")
-        else:
-            print(f"  WARN — {self.dropped_frames} drops; consider larger queue or faster preset")
-        print()
+    # Segment boundary tracking
+    boundary_queue_depths: list[dict[str, int]] = field(default_factory=list)
+    # Monitoring
+    monitor: PipelineMonitor | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +219,10 @@ def run_stress_capture_loop(
     max_frames: int,
     fps: float,
     health: PipelineHealth,
-) -> tuple[int, int, dict[str, int]]:
+) -> tuple[int, int, dict[str, int], list[dict[str, int]]]:
     """Produce random-noise frames at *fps* and feed the real pipeline.
 
-    Returns (total_frames_produced, segments_completed, max_queue_depth).
+    Returns (total_frames_produced, segments_completed, max_queue_depth, boundary_depths).
     """
     num_cameras = len(recorder.cams)
     serials = [cam.DeviceSerialNumber for cam in recorder.cams]
@@ -185,6 +236,7 @@ def run_stress_capture_loop(
     is_continuous = recorder.camera_config["acquisition-type"] == "continuous"
 
     max_queue_depth = {serial: 0 for serial in serials}
+    boundary_queue_depths: list[dict[str, int]] = []
     frame_idx = 0
     segment_frame_idx = 0
     segments_completed = 1
@@ -201,7 +253,6 @@ def run_stress_capture_loop(
             if recorder.writer_error["event"].is_set():
                 raise RuntimeError(recorder.writer_error["message"] or "worker thread failure")
 
-            # Termination: always stop after max_frames total (duration × fps)
             if frame_idx >= max_frames:
                 break
 
@@ -214,16 +265,10 @@ def run_stress_capture_loop(
             real_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             timestamp = int(time.monotonic_ns())
 
-            # Enqueue image frames (best-effort, drop on full)
             for serial in serials:
                 safe_put(
                     recorder.image_queue_dict[serial],
-                    {
-                        "im": noise_frames[serial],
-                        "real_times": real_time,
-                        "timestamps": timestamp,
-                        "base_filename": recorder.video_base_file,
-                    },
+                    {"im": noise_frames[serial], "real_times": real_time, "timestamps": timestamp, "base_filename": recorder.video_base_file},
                     queue_name=f"image_queue:{serial}",
                     health=health,
                 )
@@ -231,7 +276,6 @@ def run_stress_capture_loop(
                 if depth > max_queue_depth[serial]:
                     max_queue_depth[serial] = depth
 
-            # Enqueue metadata (fail-fast)
             metadata = {
                 "real_times": real_time,
                 "local_times": datetime.now(),
@@ -246,12 +290,7 @@ def run_stress_capture_loop(
                 "frame_rates_requested": [fps] * num_cameras,
                 "frame_rates_binning": [30] * num_cameras,
             }
-            put_metadata_or_fail(
-                recorder.json_queue,
-                metadata,
-                timeout_s=2.0,
-                worker_error_state=recorder.writer_error,
-            )
+            put_metadata_or_fail(recorder.json_queue, metadata, timeout_s=2.0, worker_error_state=recorder.writer_error)
 
             frame_idx += 1
             segment_frame_idx += 1
@@ -262,6 +301,10 @@ def run_stress_capture_loop(
 
             # Segment rollover
             if is_continuous and segment_frames > 0 and segment_frame_idx >= segment_frames:
+                # Snapshot queue depths at the boundary moment
+                boundary_snap = {serial: recorder.image_queue_dict[serial].qsize() for serial in serials}
+                boundary_queue_depths.append(boundary_snap)
+
                 segment_frame_idx = 0
                 segments_completed += 1
                 prog.close()
@@ -275,7 +318,7 @@ def run_stress_capture_loop(
     finally:
         prog.close()
 
-    return frame_idx, segments_completed, max_queue_depth
+    return frame_idx, segments_completed, max_queue_depth, boundary_queue_depths
 
 
 # ---------------------------------------------------------------------------
@@ -298,13 +341,7 @@ def run_stress_test(
     os.makedirs(output_dir, exist_ok=True)
 
     shim = StressRecorderShim(
-        num_cameras=num_cameras,
-        fps=fps,
-        width=width,
-        height=height,
-        output_dir=output_dir,
-        queue_size=queue_size,
-        segment_frames=segment_frames,
+        num_cameras=num_cameras, fps=fps, width=width, height=height, output_dir=output_dir, queue_size=queue_size, segment_frames=segment_frames
     )
 
     setup_recording_logger(output_dir=output_dir, session_name="stress_test")
@@ -312,7 +349,6 @@ def run_stress_test(
 
     max_frames = int(fps * duration_s)
 
-    # Use the real RecorderService to set up queues and spawn workers.
     svc = RecorderService(shim)
     svc.initialize_queues(max_frames=max_frames)
 
@@ -323,19 +359,18 @@ def run_stress_test(
     }
 
     worker_handles = None
+    monitor = PipelineMonitor(interval_s=2.0)
     t0 = time.monotonic()
 
     try:
         worker_handles = svc.start_workers(config_metadata=config_metadata)
         encoder_name = f"h264_nvenc {worker_handles.preset}" if worker_handles.use_nvenc else f"libx264 {worker_handles.preset}"
 
-        total_produced, segments, max_depth = run_stress_capture_loop(
-            recorder=shim,
-            max_frames=max_frames,
-            fps=fps,
-            health=health,
-        )
+        monitor.start()
+
+        total_produced, segments, max_depth, boundary_depths = run_stress_capture_loop(recorder=shim, max_frames=max_frames, fps=fps, health=health)
     finally:
+        monitor.stop()
         if worker_handles is not None and worker_handles.writers_started:
             svc.stop_workers(worker_handles)
 
@@ -356,4 +391,6 @@ def run_stress_test(
         segments_completed=segments,
         segment_frames=segment_frames,
         output_dir=output_dir,
+        boundary_queue_depths=boundary_depths,
+        monitor=monitor,
     )
