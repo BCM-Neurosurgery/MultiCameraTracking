@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import os
-import resource
 import subprocess
 import time
 import threading
@@ -118,11 +117,15 @@ def _get_gpu_temp() -> int | None:
 
 
 def _get_rss_mb() -> float:
+    """Current RSS from /proc/self/status (not peak — ru_maxrss only goes up)."""
     try:
-        ru = resource.getrusage(resource.RUSAGE_SELF)
-        return ru.ru_maxrss / 1024  # Linux: kB → MB
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024  # kB → MB
     except Exception:
-        return 0.0
+        pass
+    return 0.0
 
 
 class PipelineMonitor:
@@ -173,10 +176,13 @@ class PipelineMonitor:
 
     @property
     def rss_growth_rate_mb_per_min(self) -> float:
-        if len(self.rss_samples) < 2:
+        # Skip the first 60s of samples (warmup: worker spawn, queue fill,
+        # numpy alloc) and measure growth only in the steady-state portion.
+        steady = [(t, rss) for t, rss in self.rss_samples if t >= 60]
+        if len(steady) < 2:
             return 0.0
-        first_t, first_rss = self.rss_samples[0]
-        last_t, last_rss = self.rss_samples[-1]
+        first_t, first_rss = steady[0]
+        last_t, last_rss = steady[-1]
         elapsed_min = (last_t - first_t) / 60
         if elapsed_min < 0.5:
             return 0.0

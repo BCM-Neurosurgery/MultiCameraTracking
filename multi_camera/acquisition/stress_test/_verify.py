@@ -18,9 +18,11 @@ def verify_mp4_files(output_dir: str, num_cameras: int, expected_segments: int) 
         issues.append("No MP4 files produced")
         return issues, 0
 
-    expected = num_cameras * expected_segments
-    if len(mp4s) < expected:
-        issues.append(f"Expected {expected} MP4s ({num_cameras} cams x {expected_segments} seg), got {len(mp4s)}")
+    # The last segment is typically partial (cut off by duration limit),
+    # so accept completed_segments - 1 as the minimum.
+    min_expected = num_cameras * max(1, expected_segments - 1)
+    if len(mp4s) < min_expected:
+        issues.append(f"Expected at least {min_expected} MP4s ({num_cameras} cams x {expected_segments - 1} full seg), got {len(mp4s)}")
 
     corrupt = 0
     for mp4 in mp4s:
@@ -53,8 +55,9 @@ def verify_metadata_files(output_dir: str, expected_segments: int) -> list[str]:
         issues.append("No .metadata.jsonl files produced")
         return issues
 
-    if len(jsonl_files) < expected_segments:
-        issues.append(f"Expected {expected_segments} metadata journals, found {len(jsonl_files)}")
+    min_expected = max(1, expected_segments - 1)
+    if len(jsonl_files) < min_expected:
+        issues.append(f"Expected at least {min_expected} metadata journals, found {len(jsonl_files)}")
 
     for path in jsonl_files:
         line_count, parse_errors = 0, 0

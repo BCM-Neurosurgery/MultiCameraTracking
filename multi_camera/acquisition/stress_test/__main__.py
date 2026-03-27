@@ -193,7 +193,10 @@ def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, du
     # Memory trend
     if mon and len(mon.rss_samples) >= 2:
         growth = mon.rss_growth_rate_mb_per_min
-        rss_start, rss_end = mon.rss_samples[0][1], mon.rss_samples[-1][1]
+        # Show steady-state RSS, not the warmup spike
+        steady = [(t, rss) for t, rss in mon.rss_samples if t >= 60]
+        rss_start = steady[0][1] if steady else mon.rss_samples[0][1]
+        rss_end = steady[-1][1] if steady else mon.rss_samples[-1][1]
         if growth < 1:
             r.row("Memory Trend", f"{rss_start:.0f}→{rss_end:.0f} MB (stable)", PASS)
         elif growth < 10:
