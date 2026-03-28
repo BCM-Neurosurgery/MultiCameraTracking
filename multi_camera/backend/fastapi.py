@@ -463,7 +463,7 @@ async def get_prior_recordings(db=Depends(db_dependency)) -> List[PriorRecording
                         comment=recording.comment,
                         config_file=recording.config_file,
                         should_process=recording.should_process,
-                        timestamp_spread=recording.timestamp_spread,
+                        timestamp_spread=recording.timestamp_spread or 0.0,
                     )
                 )
 
@@ -542,13 +542,7 @@ async def get_current_config() -> str:
 
 
 def _log_system_banner(recorder, config_name: str):
-    """Log a human-readable summary of the configured system.
-
-    Also warms the GPU/NVENC detection caches so that start_acquisition
-    doesn't pay the ~3-4s detection cost on the first recording.
-    """
-    from multi_camera.acquisition.flir.gpu_detect import detect_gpu_info, detect_nvenc, recommend_preset
-
+    """Log a human-readable summary of the configured system."""
     cfg = recorder.camera_config or {}
     acq = cfg.get("acquisition-settings", {})
 
@@ -558,17 +552,7 @@ def _log_system_banner(recorder, config_name: str):
     gamma = acq.get("gamma", None)
     mode = cfg.get("acquisition-type", "continuous")
     segment = acq.get("video_segment_len", "—")
-    nvenc_preset_cfg = acq.get("nvenc_preset", "auto")
-
-    gpu = detect_gpu_info()
-    has_nvenc = detect_nvenc()
-
-    # Warm the preset cache so first recording starts instantly.
-    resolved_preset = nvenc_preset_cfg
-    if has_nvenc and nvenc_preset_cfg in ("auto", ""):
-        resolved_preset = recommend_preset(num_cameras=num_cams, target_fps=fps)
-    elif not has_nvenc:
-        resolved_preset = "veryfast"
+    preset = acq.get("nvenc_preset", "auto")
 
     w = 55
     lines = [
@@ -582,25 +566,13 @@ def _log_system_banner(recorder, config_name: str):
         f"  Gamma        {gamma if gamma is not None else 'disabled'}",
         f"  Mode         {mode} (segment: {segment} frames)",
         f"  Config       {config_name}",
-        "─" * w,
+        f"  NVENC Preset {preset}",
+        "═" * w,
+        "",
     ]
 
-    if gpu:
-        lines.append(f"  GPU          {gpu['name']} ({gpu['vram_mb']} MB VRAM)")
-        lines.append(f"  Driver       {gpu['driver']}")
-    else:
-        lines.append("  GPU          not detected")
-
-    if has_nvenc:
-        lines.append(f"  Encoder      h264_nvenc (preset: {resolved_preset}, VBR CQ=24)")
-    else:
-        lines.append("  Encoder      libx264 (CPU, preset: veryfast, CRF=18)")
-
-    lines.append("═" * w)
-    lines.append("")
-
     for line in lines:
-        if line and not line.startswith("═") and not line.startswith("─"):
+        if line and not line.startswith("═"):
             acquisition_logger.info(line)
         else:
             print(line)
@@ -613,7 +585,7 @@ async def update_config(config: ConfigFileData):
         state.acquisition.reset()
     else:
         await state.acquisition.configure_cameras(os.path.join(CONFIG_PATH, config.config))
-        await run_in_threadpool(_log_system_banner, state.acquisition, config.config)
+        _log_system_banner(state.acquisition, config.config)
     return {"status": "success", "config": config.config}
 
 
