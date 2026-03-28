@@ -1165,7 +1165,11 @@ def calibrate_bundle(
         if not extra_dist or fisheye:
             objp, imgp = board.get_all_calibration_points(rows)
             mixed = [(o, i) for (o, i) in zip(objp, imgp) if len(o) >= 7]
-            # if len(mixed) > 0:
+            if len(mixed) == 0:
+                raise ValueError(
+                    f"Camera '{camera.get_name()}' has no frames with enough charuco corners (need >=7). "
+                    "Check board visibility, lighting, and that the board is fully in frame."
+                )
             objp, imgp = zip(*mixed)
             matrix = cv2.initCameraMatrix2D(objp, imgp, tuple(size))
             camera.set_camera_matrix(matrix)

@@ -1,8 +1,21 @@
 import os
+from pathlib import Path
 
 import numpy as np
 import datajoint as dj
 
+
+def _load_datajoint_config():
+    """Load project-local DataJoint config if present."""
+    root = Path(__file__).resolve().parents[2]
+    for filename in ("datajoint_config.json", "datajoint.json", "dj_local_conf.json"):
+        cfg_path = root / filename
+        if cfg_path.exists():
+            dj.config.load(str(cfg_path))
+            return
+
+
+_load_datajoint_config()
 schema = dj.schema("multicamera_tracking")
 
 
