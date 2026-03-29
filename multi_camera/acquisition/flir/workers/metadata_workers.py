@@ -45,19 +45,28 @@ def finalize_legacy_json(base_filename: str, config_metadata: dict, recording_ti
     }
 
     last_row = None
+    skipped = 0
     with open(journal_file, "r") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
-            row = json.loads(line)
-            last_row = row
-            json_data["real_times"].append(row["real_times"])
-            json_data["timestamps"].append(row["timestamps"])
-            json_data["frame_id"].append(row["frame_id"])
-            json_data["frame_id_abs"].append(row["frame_id_abs"])
-            json_data["chunk_serial_data"].append(row["chunk_serial_data"])
-            json_data["serial_msg"].append(row["serial_msg"])
+            try:
+                row = json.loads(line)
+                last_row = row
+                json_data["real_times"].append(row["real_times"])
+                json_data["timestamps"].append(row["timestamps"])
+                json_data["frame_id"].append(row["frame_id"])
+                json_data["frame_id_abs"].append(row["frame_id_abs"])
+                json_data["chunk_serial_data"].append(row["chunk_serial_data"])
+                json_data["serial_msg"].append(row["serial_msg"])
+            except Exception as exc:
+                skipped += 1
+                log.warning("skipping corrupt metadata line in %s: %s", journal_file, exc)
+                continue
+
+    if skipped:
+        log.warning("%s: recovered %d frames, skipped %d corrupt lines", journal_file, len(json_data["real_times"]), skipped)
 
     if last_row is None:
         return
