@@ -3,7 +3,7 @@ line-length = 150
 
 [tool.poetry]
 name = "multi_camera"
-version = "0.2.0"
+version = "1.0.0"
 description = "Library for multi-camera acquisition and analysis."
 authors = ["James Cotton <peabody124@gmail.com>"]
 url="https://github.com/peabody124/MultiCameraTracking"

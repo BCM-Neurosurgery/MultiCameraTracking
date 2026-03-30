@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 
+from multi_camera.version import version_string
+
 
 def setup_recording_logger(output_dir: str, session_name: str) -> logging.Logger:
     """Create a file-only logger at ``{output_dir}/{session_name}.log``.
@@ -31,4 +33,5 @@ def setup_recording_logger(output_dir: str, session_name: str) -> logging.Logger
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
+    logger.info("software: %s", version_string())
     return logger

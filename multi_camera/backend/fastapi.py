@@ -21,6 +21,7 @@ import os
 import asyncio
 
 from multi_camera.acquisition.flir_recording_api import FlirRecorder, CameraStatus
+from multi_camera.version import version_string
 from multi_camera.backend.recording_db import (
     get_db,
     add_recording,
@@ -560,6 +561,7 @@ def _log_system_banner(recorder, config_name: str):
         "═" * w,
         "  FLIR Multi-Camera Acquisition System".center(w),
         "═" * w,
+        f"  Version      {version_string()}",
         f"  Cameras      {num_cams} connected",
         f"  Frame Rate   {fps} FPS",
         f"  Exposure     {exposure} µs",

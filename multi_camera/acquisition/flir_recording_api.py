@@ -13,6 +13,8 @@ import asyncio
 import json
 import os
 import yaml
+
+from multi_camera.version import VERSION, GIT_INFO
 import hashlib
 
 from multi_camera.acquisition.flir.camera_control import (
@@ -279,6 +281,9 @@ class FlirRecorder:
             config_metadata["meta_info"] = "No Config"
             config_metadata["camera_info"] = [c.DeviceSerialNumber for c in self.cams]
             config_metadata["camera_config_hash"] = None
+        config_metadata["software_version"] = VERSION
+        config_metadata["git_commit"] = GIT_INFO["commit"]
+        config_metadata["git_describe"] = GIT_INFO["describe"]
         return config_metadata
 
     def _run_capture_loop(self, max_frames: int, health=None):

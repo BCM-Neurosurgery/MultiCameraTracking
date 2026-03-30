@@ -3,6 +3,7 @@ FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000
+ARG GIT_COMMIT=unknown
 
 # Create non-root user with matching host UID/GID
 RUN groupadd -g ${HOST_GID} appuser \
@@ -11,7 +12,8 @@ RUN groupadd -g ${HOST_GID} appuser \
 ENV HOME=/home/appuser \
     NPM_CONFIG_CACHE=/home/appuser/.npm \
     PYTHONUNBUFFERED=1 \
-    PIP_BREAK_SYSTEM_PACKAGES=1
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    GIT_COMMIT=${GIT_COMMIT}
 
 ARG DEBIAN_FRONTEND=noninteractive
 
