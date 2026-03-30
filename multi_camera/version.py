@@ -18,7 +18,7 @@ def _git_info() -> dict:
     """
     info = {"commit": "unknown", "commit_short": "unknown", "dirty": False, "describe": "unknown"}
 
-    # Try git CLI first.
+    # Try git CLI first.  --always means describe won't fail even without tags.
     try:
         info["commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True).strip()
         info["commit_short"] = info["commit"][:10]

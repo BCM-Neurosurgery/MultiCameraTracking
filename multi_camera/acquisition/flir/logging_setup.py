@@ -18,9 +18,11 @@ def setup_recording_logger(output_dir: str, session_name: str) -> logging.Logger
     logger = logging.getLogger("flir_pipeline")
     logger.setLevel(logging.DEBUG)
 
-    # Avoid duplicate handlers on repeated calls (e.g. back-to-back recordings).
-    if logger.handlers:
-        return logger
+    # Remove stale handlers from previous recording sessions so each
+    # session gets its own log file with a fresh version header.
+    for h in logger.handlers[:]:
+        h.close()
+        logger.removeHandler(h)
 
     log_path = os.path.join(output_dir, f"{session_name}.log")
     fh = logging.FileHandler(log_path)
