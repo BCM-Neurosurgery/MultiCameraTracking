@@ -62,3 +62,7 @@ class EnduranceMonitor(PipelineMonitor):
     @property
     def fd_count_growth_per_hour(self) -> float:
         return self._growth_per_hour(self.fd_count_samples)
+
+    @property
+    def db_size_growth_kb_per_hour(self) -> float:
+        return self._growth_per_hour(self.db_size_samples) / 1024

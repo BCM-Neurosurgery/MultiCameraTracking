@@ -24,6 +24,7 @@ from multi_camera.acquisition.stress_test._report import Report, PASS, FAIL, WAR
 from multi_camera.acquisition.stress_test.__main__ import load_config, run_preflight, run_capacity
 from multi_camera.acquisition.endurance_test._runner import EnduranceRecorder, EnduranceReport, SegmentCleaner
 from multi_camera.acquisition.endurance_test._monitor import EnduranceMonitor
+from multi_camera.acquisition.flir.storage.finalize_jobs_repo import get_finalize_jobs_db_path
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,8 @@ def run_endurance_soak(
     cleaner = SegmentCleaner(output_dir=output_dir, num_cameras=cfg["num_cameras"], keep_n=5, interval_s=segment_seconds * 2)
 
     # Start extended monitor.
-    monitor = EnduranceMonitor(interval_s=monitor_interval)
+    db_path = get_finalize_jobs_db_path(output_dir)
+    monitor = EnduranceMonitor(interval_s=monitor_interval, db_path=db_path)
 
     # Timer to stop recording after duration.
     stop_timer = threading.Timer(duration_s, recorder.stop_acquisition)
@@ -227,6 +229,20 @@ def run_endurance_soak(
             r.row("FD Count", f"{fd_start} -> {fd_end} (+{fd_growth:.1f}/hr)", FAIL)
             r.issue(f"File descriptors growing at {fd_growth:.1f}/hr — descriptor leak")
 
+    # SQLite DB size trend
+    if mon and len(mon.db_size_samples) >= 2:
+        db_start_kb = mon.db_size_samples[0][1] / 1024
+        db_end_kb = mon.db_size_samples[-1][1] / 1024
+        db_growth = mon.db_size_growth_kb_per_hour
+        if db_growth <= 10:
+            r.row("SQLite DB", f"{db_start_kb:.0f} -> {db_end_kb:.0f} KB (stable)", PASS)
+        elif db_growth <= 100:
+            r.row("SQLite DB", f"{db_start_kb:.0f} -> {db_end_kb:.0f} KB (+{db_growth:.0f} KB/hr)", WARN)
+            r.issue(f"SQLite DB growing at {db_growth:.0f} KB/hr — check job cleanup")
+        else:
+            r.row("SQLite DB", f"{db_start_kb:.0f} -> {db_end_kb:.0f} KB (+{db_growth:.0f} KB/hr)", FAIL)
+            r.issue(f"SQLite DB growing at {db_growth:.0f} KB/hr — completed jobs not being cleaned")
+
     # Segment cleanup stats
     total_seg_checked = cleaner.verified_count + cleaner.failed_count
     if total_seg_checked > 0:
@@ -252,6 +268,7 @@ def run_endurance_soak(
         "rss_growth_mb_per_min": mon.rss_growth_rate_mb_per_min if mon else None,
         "thread_count_growth_per_hour": mon.thread_count_growth_per_hour if mon else None,
         "fd_count_growth_per_hour": mon.fd_count_growth_per_hour if mon else None,
+        "db_size_growth_kb_per_hour": mon.db_size_growth_kb_per_hour if mon and mon.db_size_samples else None,
         "segments_verified": cleaner.verified_count,
         "segments_verify_failed": cleaner.failed_count,
     }
