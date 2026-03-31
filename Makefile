@@ -1,7 +1,7 @@
 # This is the build file for the docker. Note this should be run from the
 # parent directory for the necessary files to be available
 
-.PHONY: clean build run validate
+.PHONY: clean build run validate endurance
 
 # detect your host UID/GID
 HOST_UID := $(shell id -u)
@@ -31,3 +31,14 @@ validate:
 	docker compose run --rm --entrypoint "" mocap \
 	  python3 -m multi_camera.acquisition.stress_test \
 	    --config /configs/camera_config.yaml -d $(DURATION)
+
+# Endurance test: real cameras + noise-injected worst-case encoding.
+# Proves pipeline survives extended operation under maximum load.
+#   make endurance                        # 4-hour default
+#   make endurance ENDURANCE_DURATION=86400   # 24-hour soak
+#   make endurance ENDURANCE_DURATION=691200  # 8-day soak
+ENDURANCE_DURATION ?= 14400
+endurance:
+	docker compose run --rm --entrypoint "" mocap \
+	  python3 -m multi_camera.acquisition.endurance_test \
+	    --config /configs/camera_config.yaml -d $(ENDURANCE_DURATION)
