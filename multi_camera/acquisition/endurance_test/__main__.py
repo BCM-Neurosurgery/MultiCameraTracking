@@ -76,7 +76,7 @@ def run_endurance_soak(
     max_frames = int(fps * duration_s)
 
     # Start segment cleanup thread.
-    cleaner = SegmentCleaner(output_dir=output_dir, num_cameras=cfg["num_cameras"], keep_n=5, interval_s=segment_seconds * 2)
+    cleaner = SegmentCleaner(output_dir=output_dir, num_cameras=cfg["num_cameras"], keep_n=2, interval_s=segment_seconds * 2)
 
     # Start extended monitor.
     db_path = get_finalize_jobs_db_path(output_dir)
