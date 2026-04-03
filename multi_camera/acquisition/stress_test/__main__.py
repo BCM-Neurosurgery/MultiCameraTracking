@@ -141,7 +141,7 @@ def run_preflight(r: Report, cfg: dict, data_volume: str):
     return disk
 
 
-def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, duration_s: float):
+def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, duration_s: float, with_frontend: bool = False):
     duration_min = duration_s / 60
     r.header("Phase 2: Soak Test")
     r.log(f"  {cfg['num_cameras']} cameras, {cfg['fps']} FPS, {duration_min:.0f} min")
@@ -155,6 +155,7 @@ def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, du
         output_dir=output_dir,
         queue_size=cfg["queue_size"],
         segment_frames=test_segment_frames,
+        with_frontend=with_frontend,
     )
     r.log()
 
@@ -206,6 +207,50 @@ def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, du
             r.row("Memory Trend", f"+{growth:.1f} MB/min", FAIL)
             r.issue(f"Memory growing at {growth:.1f} MB/min — likely leak, will OOM in 24/7")
 
+        if with_frontend and mon.frontend_monitor:
+            fm = mon.frontend_monitor
+            if fm.failed:
+                r.row("Blob URLs", "FAILED TO START", FAIL)
+                r.issue("Frontend monitor failed to start — cannot verify frontend memory behavior")
+            elif len(fm.samples) < 2:
+                r.row("Blob URLs", "insufficient samples", WARN)
+                r.issue("Frontend monitor collected too few samples to detect leaks")
+            else:
+                leaked = fm.blob_creates - fm.blob_revokes
+                blob_growth = fm.growth_rate_mb_per_min
+                blob_mb = fm.blob_active_bytes / (1024 * 1024)
+
+                # Blob URL leak row
+                if leaked == 0:
+                    r.row("Blob URLs", f"{fm.blob_creates} created, all revoked", PASS)
+                elif blob_growth < 5:
+                    r.row("Blob URLs", f"{leaked} leaked ({blob_mb:.0f} MB)", WARN)
+                    r.issue(f"{leaked} blob URLs leaked ({blob_mb:.0f} MB) — revokeObjectURL not called")
+                else:
+                    r.row("Blob URLs", f"{leaked} leaked at {blob_growth:.0f} MB/min", FAIL)
+                    r.issue(f"Frontend leaking blob URLs: {leaked} unreleased at {blob_growth:.0f} MB/min")
+
+                # JS heap row (catches non-blob leaks: closures, objects, etc.)
+                _, _, heap_start, _ = fm.samples[0]
+                _, _, heap_end, _ = fm.samples[-1]
+                heap_growth = fm.js_heap_growth_mb_per_min
+                if heap_growth > 10:
+                    r.row("Frontend Heap", f"+{heap_growth:.1f} MB/min ({heap_start:.0f}→{heap_end:.0f} MB)", FAIL)
+                    r.issue(f"Frontend JS heap growing at {heap_growth:.1f} MB/min")
+                elif heap_growth > 2:
+                    r.row("Frontend Heap", f"+{heap_growth:.1f} MB/min ({heap_start:.0f}→{heap_end:.0f} MB)", WARN)
+                    r.issue(f"Frontend JS heap growing at {heap_growth:.1f} MB/min")
+                else:
+                    r.row("Frontend Heap", f"{heap_start:.0f}→{heap_end:.0f} MB (stable)", PASS)
+
+                # DOM node row (only shown if abnormal)
+                _, _, _, nodes_start = fm.samples[0]
+                _, _, _, nodes_end = fm.samples[-1]
+                node_growth = fm.dom_node_growth_per_min
+                if node_growth > 10:
+                    r.row("Frontend DOM", f"+{node_growth:.0f} nodes/min ({nodes_start}→{nodes_end})", WARN)
+                    r.issue(f"Frontend DOM growing at {node_growth:.0f} nodes/min")
+
     r.json_data["checks"]["soak"] = {
         "drops": report.dropped_frames,
         "max_queue_depth": max_depth,
@@ -214,6 +259,9 @@ def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, du
         "gpu_max_temp": mon.gpu_max_temp if mon else None,
         "gpu_throttled": mon.gpu_throttled if mon else None,
         "rss_growth_mb_per_min": mon.rss_growth_rate_mb_per_min if mon else None,
+        "frontend_blob_leaked": (fm.blob_creates - fm.blob_revokes) if (mon and mon.frontend_monitor and not mon.frontend_monitor.failed) else None,
+        "frontend_blob_growth_mb_per_min": mon.frontend_monitor.growth_rate_mb_per_min if (mon and mon.frontend_monitor) else None,
+        "frontend_heap_growth_mb_per_min": mon.frontend_monitor.js_heap_growth_mb_per_min if (mon and mon.frontend_monitor) else None,
     }
     return report
 
@@ -298,6 +346,7 @@ def main():
     parser.add_argument("--config", type=str, required=True, help="Path to camera config YAML")
     parser.add_argument("-d", "--duration", type=float, default=300.0, help="Soak duration in seconds (default: 300 = 5 min)")
     parser.add_argument("--force-cpu", action="store_true", help="Force CPU encoding")
+    parser.add_argument("--with-frontend", action="store_true", help="Launch a headless browser and benchmark frontend UI memory leaks")
     args = parser.parse_args()
     args.data_volume = "/data"  # Always /data inside the container (mounted from $DATA_VOLUME)
 
@@ -331,7 +380,7 @@ def main():
     r.log(f"  Soak           {duration_min:.0f} min")
 
     disk = run_preflight(r, cfg, args.data_volume)
-    report = run_soak(r, cfg, output_dir, test_seg, args.duration)
+    report = run_soak(r, cfg, output_dir, test_seg, args.duration, args.with_frontend)
     total_bytes = run_verification(r, cfg, output_dir, report, test_seg)
     run_capacity(r, cfg, disk, total_bytes, report.wall_time_s)
     run_verdict(r, cfg, report, duration_min)

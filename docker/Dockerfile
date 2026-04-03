@@ -91,6 +91,12 @@ RUN pip3 install -e .
 COPY docker/start_acquisition_gui.sh /Mocap/start_acquisition_gui.sh
 RUN chmod +x /Mocap/start_acquisition_gui.sh
 
+# Playwright + headless Chromium for frontend memory leak testing (make validate-frontend)
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN pip3 install -q playwright \
+ && playwright install --with-deps chromium \
+ && chmod -R o+rx /opt/pw-browsers
+
 # Ensure data/config dirs exist
 WORKDIR /
 RUN mkdir -p /data /configs

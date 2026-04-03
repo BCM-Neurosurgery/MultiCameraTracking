@@ -21,6 +21,7 @@ from multi_camera.acquisition.flir.pipeline.queues import safe_put, put_metadata
 from multi_camera.acquisition.flir.recorder_service import RecorderService
 from multi_camera.acquisition.flir.logging_setup import setup_recording_logger
 from multi_camera.acquisition.flir.pipeline.health import PipelineHealth
+from multi_camera.acquisition.stress_test._frontend import FrontendMonitor
 
 log = logging.getLogger("flir_pipeline")
 
@@ -131,15 +132,19 @@ def _get_rss_mb() -> float:
 class PipelineMonitor:
     """Background thread that samples GPU temp and process RSS every *interval_s* seconds."""
 
-    def __init__(self, interval_s: float = 10.0):
+    def __init__(self, interval_s: float = 10.0, frontend_monitor: FrontendMonitor = None):
         self.interval_s = interval_s
         self.gpu_temp_samples: list[tuple[float, int]] = []  # (elapsed_s, temp_c)
         self.rss_samples: list[tuple[float, float]] = []  # (elapsed_s, rss_mb)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._t0 = 0.0
+        self.frontend_monitor = frontend_monitor
 
     def start(self):
+        if self.frontend_monitor:
+            self.frontend_monitor.start()
+
         self._t0 = time.monotonic()
         self._sample()  # initial sample
         self._thread = threading.Thread(target=self._run, daemon=True, name="pipeline_monitor")
@@ -150,6 +155,9 @@ class PipelineMonitor:
         if self._thread:
             self._thread.join(timeout=5)
         self._sample()  # final sample
+
+        if self.frontend_monitor:
+            self.frontend_monitor.stop()
 
     def _sample(self):
         elapsed = time.monotonic() - self._t0
@@ -341,6 +349,7 @@ def run_stress_test(
     output_dir: str = "/tmp/stress_test",
     queue_size: int = 150,
     segment_frames: int = 0,
+    with_frontend: bool = False,
 ) -> StressReport:
     """Run a full pipeline stress test with synthetic worst-case frames."""
 
@@ -365,7 +374,9 @@ def run_stress_test(
     }
 
     worker_handles = None
-    monitor = PipelineMonitor(interval_s=2.0)
+
+    frontend_mon = FrontendMonitor(fps=fps) if with_frontend else None
+    monitor = PipelineMonitor(interval_s=2.0, frontend_monitor=frontend_mon)
     t0 = time.monotonic()
 
     try:

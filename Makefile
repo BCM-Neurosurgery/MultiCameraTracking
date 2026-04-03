@@ -21,22 +21,21 @@ build:
 run:
 	docker compose run --rm mocap
 
-# Deployment validation: loads camera config, checks hardware, disk I/O,
-# runs pipeline stress test with worst-case frames, verifies all outputs.
-# Reports saved to ./validation/
-#   make validate              # 5-min soak (default)
-#   make validate DURATION=600 # 10-minute soak
+# Quick validation: 5-min synthetic soak + frontend memory leak check.
+#   make validate              # 5 min
+#   make validate DURATION=600 # 10 min
 DURATION ?= 300
 validate:
-	docker compose run --rm --entrypoint "" mocap \
-	  python3 -m multi_camera.acquisition.stress_test \
-	    --config /configs/camera_config.yaml -d $(DURATION)
+	docker compose run --rm -u root --entrypoint "" mocap \
+	  bash -c '\
+	    chown -R $(HOST_UID):$(HOST_GID) /Mocap/react_frontend && \
+	    su appuser -c "python3 -m multi_camera.acquisition.stress_test --config /configs/camera_config.yaml -d $(DURATION) --with-frontend"'
 
 # Endurance test: real cameras + noise-injected worst-case encoding.
 # Proves pipeline survives extended operation under maximum load.
-#   make endurance                        # 4-hour default
-#   make endurance ENDURANCE_DURATION=86400   # 24-hour soak
-#   make endurance ENDURANCE_DURATION=691200  # 8-day soak
+#   make endurance                             # 4-hour default
+#   make endurance ENDURANCE_DURATION=86400    # 24-hour soak
+#   make endurance ENDURANCE_DURATION=691200   # 8-day soak
 ENDURANCE_DURATION ?= 14400
 endurance:
 	docker compose run --rm --entrypoint "" mocap \
