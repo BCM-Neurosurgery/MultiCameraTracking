@@ -21,7 +21,6 @@ const Video = () => {
         };
 
         ws.current.onmessage = (event) => {
-            console.log("new image")
             const data = event.data;
 
             if (imageSrc) {

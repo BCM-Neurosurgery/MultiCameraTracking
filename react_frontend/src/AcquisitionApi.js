@@ -98,7 +98,6 @@ export const AquisitionApi = (props) => {
 
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            console.log("WebSocket message received", data);
             setRecordingSystemStatus(data.status);
 
             // if there is a progress field, then update the progress bar
@@ -452,14 +451,8 @@ export const AquisitionApi = (props) => {
     }
 
     useEffect(() => {
-        //Implementing the setInterval method
-        //const interval = setInterval(() => {
-        fetchCameraStatus()
-        fetchRecordings()
-        //}, 500);
-
-        //Clearing the interval
-        //return () => clearInterval(interval);
+        fetchCameraStatus();
+        fetchRecordings();
     }, [recordingSystemStatus, participant]);
 
     return (<AcquisitionState.Provider value={{
