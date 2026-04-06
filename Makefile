@@ -1,7 +1,7 @@
 # This is the build file for the docker. Note this should be run from the
 # parent directory for the necessary files to be available
 
-.PHONY: clean build run up down watchdog validate endurance
+.PHONY: clean build run validate endurance
 
 # detect your host UID/GID
 HOST_UID := $(shell id -u)
@@ -18,25 +18,12 @@ build:
 	  --build-arg HOST_GID=$(HOST_GID) \
 	  --build-arg GIT_COMMIT=$(GIT_COMMIT)
 
-up:
-	docker compose up -d mocap
-	@echo "Waiting for backend API..."
-	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-	  curl -s http://localhost:8000/api/v1/recording_status >/dev/null 2>&1 && break; \
-	  sleep 2; \
-	done
-	@echo "Backend ready on localhost:8000"
+run:
 	@python scripts/watchdog.py &> /tmp/recording_watchdog.log & \
 	  echo $$! > /tmp/recording_watchdog.pid; \
 	  echo "Watchdog started (PID $$(cat /tmp/recording_watchdog.pid)), log: /tmp/recording_watchdog.log"
-
-down:
-	-@kill $$(cat /tmp/recording_watchdog.pid 2>/dev/null) 2>/dev/null && echo "Watchdog stopped" || true
-	-@rm -f /tmp/recording_watchdog.pid
-	docker compose down
-
-run:
-	docker compose run --rm mocap
+	@trap 'kill $$(cat /tmp/recording_watchdog.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/recording_watchdog.pid' EXIT; \
+	  docker compose run --rm mocap
 
 # Quick validation: 5-min synthetic soak + frontend memory leak check.
 #   make validate              # 5 min

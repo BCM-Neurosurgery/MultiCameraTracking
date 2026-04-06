@@ -86,18 +86,16 @@ class SlackAlerter:
 # ── Check functions ─────────────────────────────────────────────
 
 
-def is_container_running(service: str = "mocap") -> bool:
-    """Check if the Docker Compose service is running."""
+def is_recording_active(api_base: str = "http://localhost:8000/api/v1") -> bool:
+    """Check if a recording is currently running by querying the backend API."""
     try:
-        out = subprocess.check_output(
-            ["docker", "compose", "ps", "-q", service],
-            text=True,
-            timeout=5,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-        return bool(out)
+        r = requests.get(f"{api_base}/recording_status", timeout=5)
+        if r.status_code == 200:
+            status = r.json()
+            return status in ("Recording", "Synchronizing", "Synchronized")
     except Exception:
-        return False
+        pass
+    return False
 
 
 def find_active_recording_dir(data_volume: str) -> str | None:
@@ -275,10 +273,10 @@ def main():
 
     try:
         while True:
-            container_up = is_container_running()
+            recording = is_recording_active()
 
-            # File growth — only when container is running
-            if container_up:
+            # File growth — only when actively recording
+            if recording:
                 ok, detail = check_file_growth(data_volume, args.stale_threshold)
                 if ok:
                     log.debug("file_growth: %s", detail)
@@ -286,7 +284,9 @@ def main():
                 else:
                     alerter.alert("file_growth", detail)
             else:
-                log.debug("Container not running — skipping file growth check")
+                log.debug("Not recording — skipping file growth check")
+                # Clear any stale file_growth alert when recording stops normally
+                alerter.recover("file_growth", f":white_check_mark: *Recording stopped normally*\nHost: `{HOSTNAME}`")
 
             # Host memory — always
             ok, detail = check_host_memory(args.ram_warn_pct)
