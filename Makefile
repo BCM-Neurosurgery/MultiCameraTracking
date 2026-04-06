@@ -19,11 +19,7 @@ build:
 	  --build-arg GIT_COMMIT=$(GIT_COMMIT)
 
 run:
-	@python scripts/watchdog.py &> /tmp/recording_watchdog.log & \
-	  echo $$! > /tmp/recording_watchdog.pid; \
-	  echo "Watchdog started (PID $$(cat /tmp/recording_watchdog.pid)), log: /tmp/recording_watchdog.log"
-	@trap 'kill $$(cat /tmp/recording_watchdog.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/recording_watchdog.pid' EXIT; \
-	  docker compose run --rm mocap
+	docker compose run --rm mocap
 
 # Quick validation: 5-min synthetic soak + frontend memory leak check.
 #   make validate              # 5 min
