@@ -9,43 +9,29 @@ const Video = () => {
     const { videoUrl } = useContext(AcquisitionState);
     const [imageSrc, setImageSrc] = useState("");
     const ws = useRef(null);
+    const prevUrlRef = useRef(null);
 
     useEffectOnce(() => {
 
-        console.log('Connecting to video websocket...');
-
         ws.current = new WebSocket(videoUrl);
 
-        ws.current.onopen = () => {
-            console.log("Video WebSocket connected");
-        };
-
         ws.current.onmessage = (event) => {
-            const data = event.data;
-
-            if (imageSrc) {
-                URL.revokeObjectURL(imageSrc);
-            }
-
-            const blob = new Blob([data], { type: "image/jpeg" });
+            const blob = new Blob([event.data], { type: "image/jpeg" });
             const url = URL.createObjectURL(blob);
+            const prev = prevUrlRef.current;
+            prevUrlRef.current = url;
             setImageSrc(url);
+            if (prev) {
+                URL.revokeObjectURL(prev);
+            }
         };
-
-        ws.current.onclose = () => {
-            console.log("Video WebSocket disconnected");
-        };
-
-        ws.current.onerror = (event) => {
-            console.log("Video WebSocket error observed:", event);
-        }
 
         return () => {
             if (ws.current) {
                 ws.current.close();
             }
-            if (imageSrc) {
-                URL.revokeObjectURL(imageSrc);
+            if (prevUrlRef.current) {
+                URL.revokeObjectURL(prevUrlRef.current);
             }
         };
     }, []);
