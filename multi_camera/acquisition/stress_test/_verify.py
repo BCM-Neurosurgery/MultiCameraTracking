@@ -25,6 +25,7 @@ def verify_mp4_files(output_dir: str, num_cameras: int, expected_segments: int) 
         issues.append(f"Expected at least {min_expected} MP4s ({num_cameras} cams x {expected_segments - 1} full seg), got {len(mp4s)}")
 
     corrupt = 0
+    wrong_pixfmt = 0
     for mp4 in mp4s:
         total_bytes += os.path.getsize(mp4)
         try:
@@ -39,8 +40,23 @@ def verify_mp4_files(output_dir: str, num_cameras: int, expected_segments: int) 
         except Exception:
             corrupt += 1
 
+        # Verify output pixel format is yuv420p (not gbrp from raw Bayer demosaic).
+        try:
+            pf = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", mp4],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if pf.returncode == 0 and pf.stdout.strip() != "yuv420p":
+                wrong_pixfmt += 1
+        except Exception:
+            pass  # already counted in corrupt check above if ffprobe itself fails
+
     if corrupt > 0:
         issues.append(f"{corrupt}/{len(mp4s)} MP4 files failed ffprobe validation")
+    if wrong_pixfmt > 0:
+        issues.append(f"{wrong_pixfmt}/{len(mp4s)} MP4 files have wrong pixel format (expected yuv420p)")
 
     return issues, total_bytes
 

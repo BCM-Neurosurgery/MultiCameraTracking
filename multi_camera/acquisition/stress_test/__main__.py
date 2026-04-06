@@ -220,8 +220,8 @@ def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, du
                 blob_growth = fm.growth_rate_mb_per_min
                 blob_mb = fm.blob_active_bytes / (1024 * 1024)
 
-                # Blob URL leak row
-                if leaked == 0:
+                # Blob URL leak row — 1 active URL (the currently displayed frame) is expected
+                if leaked <= 1:
                     r.row("Blob URLs", f"{fm.blob_creates} created, all revoked", PASS)
                 elif blob_growth < 5:
                     r.row("Blob URLs", f"{leaked} leaked ({blob_mb:.0f} MB)", WARN)
@@ -273,7 +273,7 @@ def run_verification(r: Report, cfg: dict, output_dir: str, report, test_segment
     mp4_issues, total_bytes = verify_mp4_files(output_dir, cfg["num_cameras"], report.segments_completed)
     mp4_count = len(glob.glob(os.path.join(output_dir, "*.mp4")))
     if not mp4_issues:
-        r.row("MP4 Files", f"{mp4_count} files, all playable", PASS)
+        r.row("MP4 Files", f"{mp4_count} files, all playable, yuv420p", PASS)
     else:
         for issue in mp4_issues:
             r.row("MP4 Files", issue, FAIL)

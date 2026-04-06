@@ -51,6 +51,11 @@ def _build_ffmpeg_cmd(output_path: str, width: int, height: int, fps: float, pix
     else:
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
 
+    # Force YUV 4:2:0 output.  Without this, ffmpeg's Bayer demosaic produces
+    # GBR 4:4:4 (gbrp) which causes green tint in QuickTime / thumbnails and
+    # is incompatible with many hardware decoders.
+    cmd += ["-pix_fmt", "yuv420p"]
+
     # Keyframe interval = 1 second (for fragmented MP4 granularity).
     gop = max(1, int(round(fps)))
     cmd += ["-g", str(gop)]

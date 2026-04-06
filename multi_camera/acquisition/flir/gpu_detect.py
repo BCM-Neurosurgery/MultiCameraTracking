@@ -138,6 +138,8 @@ def _benchmark_preset(num_sessions: int, preset: str, num_frames: int = 30) -> f
         "constqp",
         "-qp",
         "18",
+        "-pix_fmt",
+        "yuv420p",
         "-f",
         "null",
         "-",
