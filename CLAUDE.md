@@ -12,8 +12,13 @@ Multi-camera video acquisition and biomechanics analysis system. Captures synchr
 # Install
 pip install -r requirements.txt && pip install -e .
 
-# Docker build (uses Makefile to detect HOST_UID/HOST_GID)
-make build
+# Docker build — Makefile detects HOST_UID/HOST_GID and auto-selects PROFILE
+# via nvidia-smi (gpu if present, else cpu). Override with PROFILE=cpu.
+make build                    # auto
+make build PROFILE=cpu        # force CPU image (peabody124/mocap-cpu)
+make validate                 # stress-test; auto-selects profile
+make validate PROFILE=cpu     # stress-test the CPU encode path explicitly
+make endurance                # 4-hour real-camera soak (auto profile)
 
 # Run recording
 python -m multi_camera.acquisition.flir_recording_api [-m MAX_FRAMES] [-n NUM_CAMS] [--preview] vid_filename
@@ -71,7 +76,10 @@ journal files → encode_worker (ffmpeg subprocess) → .mp4
 
 ## Key Constraints
 
-- **Python 3.10** in Docker container (base image: `nvidia/cuda:12.2.2-runtime-ubuntu22.04`). Spinnaker SDK 4.3, ffmpeg with NVENC baked into image
+- **Python 3.10** in Docker container. GPU profile base: `nvidia/cuda:12.2.2-runtime-ubuntu22.04`; CPU profile base: `ubuntu:22.04`. Spinnaker SDK 4.3 and BtbN ffmpeg (includes libx264 and NVENC symbols) are baked into both images.
+- **Deployment profiles:** `PROFILE=gpu` (default, auto-detected via `nvidia-smi`) uses `docker-compose.yml` + `docker/Dockerfile`; `PROFILE=cpu` uses `docker-compose.cpu.yml` + `docker/Dockerfile.cpu` and installs `requirements-cpu.txt` (no JAX). Analysis deps (EasyMocap) are gated behind the `INSTALL_ANALYSIS` build arg — default `true` on GPU, `false` on CPU. Acquisition + FastAPI backend + React frontend are CPU-compatible; the 7 analysis routes (`/mesh`, `/smpl*`, `/biomechanics*`, `/annotation`, `/unannotated_recordings`) return HTTP 500 on the CPU image because their deps aren't installed.
+- **Stress / endurance tests** take `--profile {auto,gpu,cpu}`. Under CPU profile, preflight benchmarks libx264 presets (`medium → ultrafast`) and fails if none sustain target fps + 40% headroom. `--force-cpu` is preserved as a deprecated alias.
+- **Encoder selection is runtime.** `gpu_detect.detect_nvenc()` probes `h264_nvenc` with a real test-encode; `recorder_service._detect_encoder()` honors `FORCE_CPU_ENCODE=1`. No Python code change was needed for the CPU encode path — the libx264 fallback already existed.
 - **Black formatter** with line-length=150 (configured in `pyproject.toml`)
 - **No pre-commit hooks or CI** currently configured
 - Camera config is YAML-based: camera serial mapping, acquisition settings, GPIO trigger config

@@ -1,0 +1,20 @@
+services:
+  mocap:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.cpu
+    image: peabody124/mocap-cpu
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    tty: true
+    stdin_open: true
+    environment:
+      REACT_APP_BASE_URL: ${REACT_APP_BASE_URL}
+      PYTHONUNBUFFERED: 1
+      MOCAP_PROFILE: cpu
+      PROJECT_IDS: ${PROJECT_IDS:-TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036,TEST-XXXXX}
+    volumes:
+      - ${DATA_VOLUME}:/data
+      - ${CAMERA_CONFIGS}:/configs
+      - /etc/localtime:/etc/localtime:ro
+      - ${DATAJOINT_EXTERNAL}:/datajoint_external
+    network_mode: host

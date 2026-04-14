@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import time
@@ -164,6 +165,146 @@ def benchmark_disk_write(path: str, size_mb: int = 256) -> float:
             os.remove(test_file)
         except OSError:
             pass
+
+
+def check_host_info() -> dict:
+    """Return kernel, CPU model, and physical/logical core counts.
+
+    Physical core count comes from `/proc/cpuinfo` core-id uniqueness;
+    logical count is `os.cpu_count()`. Works inside the container as long
+    as `/proc` is mounted (it is, by default).
+    """
+    info = {
+        "kernel": platform.release(),
+        "cpu_model": "unknown",
+        "cores_physical": 0,
+        "cores_logical": os.cpu_count() or 0,
+    }
+    try:
+        physical = set()
+        with open("/proc/cpuinfo") as f:
+            current_pkg = None
+            for line in f:
+                if line.startswith("model name") and info["cpu_model"] == "unknown":
+                    info["cpu_model"] = line.split(":", 1)[1].strip()
+                elif line.startswith("physical id"):
+                    current_pkg = line.split(":", 1)[1].strip()
+                elif line.startswith("core id") and current_pkg is not None:
+                    physical.add((current_pkg, line.split(":", 1)[1].strip()))
+        if physical:
+            info["cores_physical"] = len(physical)
+    except Exception:
+        pass
+    # Fallback if /proc/cpuinfo had no physical/core-id (e.g. some VMs).
+    if info["cores_physical"] == 0:
+        info["cores_physical"] = info["cores_logical"]
+    return info
+
+
+def check_cpu_capacity(num_cameras: int) -> dict:
+    """Rough rule: need ≥ 2 logical cores per camera for libx264 `veryfast`.
+
+    Returns {logical, physical, required, sufficient, warn_only}.
+    - sufficient: ≥ 2× num_cameras logical cores.
+    - warn_only: ≥ 1× num_cameras logical cores (likely to keep up at
+      `ultrafast` or similar).
+    """
+    host = check_host_info()
+    logical = host["cores_logical"]
+    required = num_cameras * 2
+    sufficient = logical >= required
+    warn_only = logical >= num_cameras
+    return {
+        "model": host["cpu_model"],
+        "physical": host["cores_physical"],
+        "logical": logical,
+        "required": required,
+        "sufficient": sufficient,
+        "warn_only": warn_only and not sufficient,
+    }
+
+
+def benchmark_libx264(num_cameras: int, target_fps: float, width: int = 1920, height: int = 1200, min_headroom: float = 0.4) -> dict:
+    """Benchmark libx264 presets under *num_cameras* concurrent encodes.
+
+    Candidate order: medium → fast → faster → veryfast → superfast → ultrafast.
+    Returns the slowest preset that sustains ≥ *target_fps* × (1 + *min_headroom*)
+    per session, or "ultrafast" if none meet the threshold.
+
+    Returned dict: {preset, per_session_fps, target, headroom, sufficient}.
+    """
+    threshold = target_fps * (1 + min_headroom)
+    presets = ["medium", "fast", "faster", "veryfast", "superfast", "ultrafast"]
+
+    def _bench(preset: str, num_frames: int = 60) -> float:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "bayer_rggb8",
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            "300",
+            "-i",
+            "/dev/zero",
+            "-frames:v",
+            str(num_frames),
+            "-c:v",
+            "libx264",
+            "-preset",
+            preset,
+            "-crf",
+            "18",
+            "-f",
+            "null",
+            "-",
+        ]
+        procs = []
+        t0 = time.monotonic()
+        try:
+            for _ in range(num_cameras):
+                procs.append(subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            failed = sum(1 for p in procs if p.wait(timeout=60) != 0)
+        except Exception:
+            for p in procs:
+                try:
+                    p.kill()
+                except OSError:
+                    pass
+            return 0.0
+        elapsed = time.monotonic() - t0
+        if elapsed <= 0 or failed > 0:
+            return 0.0
+        return num_frames / elapsed
+
+    best_preset = "ultrafast"
+    best_fps = 0.0
+    for preset in presets:
+        fps = _bench(preset)
+        if fps >= threshold:
+            return {
+                "preset": preset,
+                "per_session_fps": fps,
+                "target": target_fps,
+                "headroom": (fps / target_fps) - 1.0 if target_fps else 0.0,
+                "sufficient": True,
+            }
+        if fps > best_fps:
+            best_preset, best_fps = preset, fps
+
+    return {
+        "preset": best_preset,
+        "per_session_fps": best_fps,
+        "target": target_fps,
+        "headroom": (best_fps / target_fps) - 1.0 if target_fps else 0.0,
+        "sufficient": False,
+    }
 
 
 def benchmark_disk_metadata(path: str, num_files: int = 500) -> float:

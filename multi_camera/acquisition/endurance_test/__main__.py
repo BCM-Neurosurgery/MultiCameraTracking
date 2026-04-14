@@ -21,7 +21,7 @@ from datetime import datetime
 
 from multi_camera.acquisition.stress_test._verify import verify_mp4_files, verify_metadata_files
 from multi_camera.acquisition.stress_test._report import Report, PASS, FAIL, WARN
-from multi_camera.acquisition.stress_test.__main__ import load_config, run_preflight, run_capacity
+from multi_camera.acquisition.stress_test.__main__ import load_config, resolve_profile, run_preflight, run_capacity
 from multi_camera.acquisition.endurance_test._runner import EnduranceRecorder, EnduranceReport, SegmentCleaner
 from multi_camera.acquisition.endurance_test._monitor import EnduranceMonitor
 from multi_camera.acquisition.flir.storage.finalize_jobs_repo import get_finalize_jobs_db_path
@@ -307,18 +307,20 @@ def run_verification(r: Report, cfg: dict, output_dir: str, report: EnduranceRep
     return total_bytes
 
 
-def run_verdict(r: Report, cfg: dict, report: EnduranceReport, duration_h: float):
+def run_verdict(r: Report, cfg: dict, report: EnduranceReport, duration_h: float, profile: str):
     r.log()
     r.log("=" * 60)
 
     has_fatal = any(kw in i.lower() for i in r.issues for kw in ("failed", "invalid", "not detected", "throttl", "leak", "no cameras"))
 
     r.json_data["verdict"] = "FAIL" if has_fatal else ("WARN" if r.issues else "PASS")
+    r.json_data["profile"] = profile
 
     noise_str = "noise-injected " if report.inject_noise else ""
+    profile_tag = f"{profile.upper()} profile"
     if not r.issues:
         mon = report.monitor
-        r.log(f"  {PASS} READY for {cfg['num_cameras']}-camera 24/7 deployment")
+        r.log(f"  {PASS} READY for {cfg['num_cameras']}-camera 24/7 deployment ({profile_tag}, encoder {report.encoder})")
         r.log(f"  {PASS} {duration_h:.1f}h {noise_str}endurance: 0 drops, {report.segments_completed} segments")
         if mon and mon.gpu_temp_samples:
             r.log(f"  {PASS} GPU stable at {mon.gpu_final_temp}C")
@@ -329,7 +331,7 @@ def run_verdict(r: Report, cfg: dict, report: EnduranceReport, duration_h: float
     else:
         icon = FAIL if has_fatal else WARN
         label = "NOT READY" if has_fatal else "READY WITH WARNINGS"
-        r.log(f"  {icon} {label} for {cfg['num_cameras']}-camera deployment")
+        r.log(f"  {icon} {label} for {cfg['num_cameras']}-camera deployment ({profile_tag})")
         r.log()
         for issue in r.issues:
             r.log(f"    {WARN} {issue}")
@@ -348,12 +350,21 @@ def main():
     parser.add_argument("-d", "--duration", type=float, default=14400.0, help="Duration in seconds (default: 14400 = 4h)")
     parser.add_argument("--segment-seconds", type=int, default=120, help="Segment length in seconds (default: 120)")
     parser.add_argument("--no-inject-noise", action="store_true", help="Disable noise injection (default: noise ON)")
-    parser.add_argument("--force-cpu", action="store_true", help="Force CPU encoding")
+    parser.add_argument(
+        "--profile",
+        choices=("auto", "gpu", "cpu"),
+        default="auto",
+        help="Deployment profile. 'auto' probes NVENC and picks gpu/cpu (default). 'cpu' forces libx264.",
+    )
+    parser.add_argument("--force-cpu", action="store_true", help="Deprecated alias for --profile cpu")
     parser.add_argument("--monitor-interval", type=float, default=60.0, help="Monitoring sample interval in seconds (default: 60)")
     args = parser.parse_args()
     args.data_volume = "/data"
 
     if args.force_cpu:
+        args.profile = "cpu"
+    profile = resolve_profile(args.profile)
+    if profile == "cpu":
         os.environ["FORCE_CPU_ENCODE"] = "1"
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))
 
@@ -370,8 +381,10 @@ def main():
     r.json_data["config"] = cfg["config_name"]
     r.json_data["timestamp"] = timestamp
     r.json_data["test_type"] = "endurance"
+    r.json_data["profile"] = profile
 
     r.header("Endurance Test")
+    r.log(f"  Profile        {profile}")
     r.log(f"  Config         {cfg['config_name']}.yaml")
     r.log(f"  Cameras        {cfg['num_cameras']}  |  {cfg['fps']} FPS  |  {cfg['mode']}")
     r.log(f"  Duration       {duration_h:.1f} hours")
@@ -379,7 +392,7 @@ def main():
     r.log(f"  Noise inject   {'ON' if inject_noise else 'OFF'}")
 
     # Phase 1: Preflight (reused from stress_test)
-    disk = run_preflight(r, cfg, args.data_volume)
+    disk = run_preflight(r, cfg, args.data_volume, profile)
 
     # Phase 2: Camera initialization
     recorder = EnduranceRecorder(inject_noise=inject_noise)
@@ -403,7 +416,7 @@ def main():
 
         # Phase 5: Verdict
         if report is not None:
-            run_verdict(r, cfg, report, duration_h)
+            run_verdict(r, cfg, report, duration_h, profile)
         else:
             r.log()
             r.log("=" * 60)

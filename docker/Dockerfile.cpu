@@ -1,12 +1,17 @@
 # syntax=docker/dockerfile:1
-FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
+# CPU-only variant of docker/Dockerfile.
+# - Replaces the CUDA base with plain Ubuntu 22.04.
+# - Skips GPU-bound analysis deps (EasyMocap, JAX/jaxlib).
+# - Keeps the BtbN ffmpeg build (h264_nvenc symbols present but unused on CPU hosts).
+# - Acquisition pipeline, FastAPI backend, and React frontend are fully functional.
+# - Analysis routes in the FastAPI backend lazy-import their deps and will 500 on call.
+FROM ubuntu:22.04
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 ARG GIT_COMMIT=unknown
-# Set to "false" to skip GPU-bound analysis deps (EasyMocap). Default keeps
-# historical behaviour byte-identical for GPU deployments.
-ARG INSTALL_ANALYSIS=true
+# CPU image deliberately does not install analysis deps.
+ARG INSTALL_ANALYSIS=false
 
 # Create non-root user with matching host UID/GID
 RUN groupadd -g ${HOST_GID} appuser \
@@ -16,7 +21,8 @@ ENV HOME=/home/appuser \
     NPM_CONFIG_CACHE=/home/appuser/.npm \
     PYTHONUNBUFFERED=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
-    GIT_COMMIT=${GIT_COMMIT}
+    GIT_COMMIT=${GIT_COMMIT} \
+    MOCAP_PROFILE=cpu
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -29,8 +35,7 @@ RUN apt-get update && apt-get install -y \
     libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-### FFmpeg with NVENC support (BtbN static build — includes libx264, h264_nvenc, hevc_nvenc)
-### This replaces the old volume-mount hack with a reproducible build step
+### FFmpeg (BtbN static build — includes libx264; h264_nvenc is present but inert on CPU hosts)
 RUN curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
     | tar -xJ --strip-components=2 -C /usr/local/bin/ \
       ffmpeg-master-latest-linux64-gpl/bin/ffmpeg \
@@ -72,7 +77,7 @@ COPY react_frontend/package*.json ./
 RUN npm install
 COPY react_frontend/ ./
 
-### Install EasyMocap (for future 3D reconstruction pipeline) — analysis-only
+### Analysis deps (EasyMocap) — gated; CPU profile default skips.
 WORKDIR /
 RUN pip3 install --upgrade pip && \
     if [ "$INSTALL_ANALYSIS" = "true" ]; then \
@@ -85,10 +90,10 @@ RUN pip3 install --upgrade pip && \
 ### Performance libraries
 RUN pip3 install tbb numba
 
-### MultiCameraTracking
+### MultiCameraTracking — CPU requirements (no JAX/jaxlib)
 WORKDIR /Mocap
-COPY requirements.txt ./
-RUN pip3 install -r requirements.txt
+COPY requirements-cpu.txt ./
+RUN pip3 install -r requirements-cpu.txt
 COPY pyproject.toml README.md ./
 COPY multi_camera ./multi_camera
 COPY model_data ./model_data

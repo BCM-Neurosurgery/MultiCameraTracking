@@ -16,20 +16,31 @@ from datetime import datetime
 
 import yaml
 
+from multi_camera.acquisition.flir.gpu_detect import detect_nvenc
 from multi_camera.acquisition.stress_test._preflight import (
+    benchmark_disk_metadata,
+    benchmark_disk_write,
+    benchmark_libx264,
+    check_cpu_capacity,
+    check_disk,
+    check_fd_limits,
     check_gpu,
+    check_host_info,
     check_nvenc,
     check_nvenc_concurrent,
     check_ram,
-    check_fd_limits,
-    check_disk,
     detect_volume_type,
-    benchmark_disk_write,
-    benchmark_disk_metadata,
 )
 from multi_camera.acquisition.stress_test._runner import run_stress_test
 from multi_camera.acquisition.stress_test._verify import verify_mp4_files, verify_metadata_files
 from multi_camera.acquisition.stress_test._report import Report, PASS, FAIL, WARN
+
+
+def resolve_profile(profile_arg: str) -> str:
+    """auto → 'gpu' if NVENC functional, else 'cpu'. gpu/cpu pass through."""
+    if profile_arg in ("gpu", "cpu"):
+        return profile_arg
+    return "gpu" if detect_nvenc() else "cpu"
 
 
 def load_config(config_path: str) -> dict:
@@ -55,34 +66,75 @@ def load_config(config_path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def run_preflight(r: Report, cfg: dict, data_volume: str):
+def run_preflight(r: Report, cfg: dict, data_volume: str, profile: str):
     r.header("Phase 1: Preflight")
     n = cfg["num_cameras"]
 
-    # GPU + NVENC
-    gpu = check_gpu()
-    if gpu:
-        r.row("GPU", gpu["name"], PASS)
-        r.row("VRAM", f"{gpu['vram_total_mb']} MB total, {gpu['vram_free_mb']} MB free", PASS)
-        r.row("Driver", gpu["driver"], PASS)
-    else:
-        r.row("GPU", "not detected", FAIL)
-        r.issue("No GPU detected — CPU encoding only (slow, may not sustain load)")
+    r.row("Profile", profile.upper() + (" (NVENC)" if profile == "gpu" else " (libx264, analysis disabled)"), PASS)
 
-    has_nvenc = check_nvenc()
-    if has_nvenc:
-        r.row("NVENC", "h264_nvenc available", PASS)
-    else:
-        r.row("NVENC", "not available", FAIL if gpu else WARN)
+    host = check_host_info()
+    r.row("Kernel", host["kernel"], "")
+    r.row("CPU", f"{host['cpu_model']} ({host['cores_physical']}P/{host['cores_logical']}T)", "")
+
+    gpu = {}
+    has_nvenc = False
+    x264_bench = None
+
+    if profile == "gpu":
+        # GPU + NVENC
+        gpu = check_gpu()
         if gpu:
-            r.issue("GPU present but NVENC failed — check driver/container GPU passthrough")
+            r.row("GPU", gpu["name"], PASS)
+            r.row("VRAM", f"{gpu['vram_total_mb']} MB total, {gpu['vram_free_mb']} MB free", PASS)
+            r.row("Driver", gpu["driver"], PASS)
+        else:
+            r.row("GPU", "not detected", FAIL)
+            r.issue("No GPU detected — CPU encoding only (slow, may not sustain load)")
 
-    if has_nvenc and n > 1:
-        r.log(f"  Testing {n} concurrent NVENC sessions...")
-        all_ok, count = check_nvenc_concurrent(n)
-        r.check("NVENC Sessions", f"{count}/{n} OK", good=all_ok, bad=not all_ok)
-        if not all_ok:
-            r.issue(f"GPU supports only {count} concurrent NVENC sessions, need {n}")
+        has_nvenc = check_nvenc()
+        if has_nvenc:
+            r.row("NVENC", "h264_nvenc available", PASS)
+        else:
+            r.row("NVENC", "not available", FAIL if gpu else WARN)
+            if gpu:
+                r.issue("GPU present but NVENC failed — check driver/container GPU passthrough")
+
+        if has_nvenc and n > 1:
+            r.log(f"  Testing {n} concurrent NVENC sessions...")
+            all_ok, count = check_nvenc_concurrent(n)
+            r.check("NVENC Sessions", f"{count}/{n} OK", good=all_ok, bad=not all_ok)
+            if not all_ok:
+                r.issue(f"GPU supports only {count} concurrent NVENC sessions, need {n}")
+    else:
+        # CPU profile: NVENC checks skipped intentionally.
+        cpu_cap = check_cpu_capacity(n)
+        if cpu_cap["sufficient"]:
+            r.row("CPU Capacity", f"{cpu_cap['logical']} threads (need {cpu_cap['required']})", PASS)
+        elif cpu_cap["warn_only"]:
+            r.row("CPU Capacity", f"{cpu_cap['logical']} threads (need {cpu_cap['required']})", WARN)
+            r.issue(f"CPU has {cpu_cap['logical']} threads — at or below 2× num_cameras; headroom is tight")
+        else:
+            r.row("CPU Capacity", f"{cpu_cap['logical']} threads (need {cpu_cap['required']})", FAIL)
+            r.issue(f"CPU has {cpu_cap['logical']} threads — insufficient for {n} concurrent libx264 encodes")
+
+        r.log(f"  Benchmarking libx264 across presets (medium → ultrafast, {n} concurrent)...")
+        raw = cfg["raw"]
+        cam_info = raw.get("camera-info", {})
+        first_cam = next(iter(cam_info.values()), {}) if cam_info else {}
+        acq = raw.get("acquisition-settings", {})
+        width = first_cam.get("width") or acq.get("width") or 1920
+        height = first_cam.get("height") or acq.get("height") or 1200
+        x264_bench = benchmark_libx264(n, cfg["fps"], width=width, height=height)
+        headroom_pct = x264_bench["headroom"] * 100
+        bench_val = f"{x264_bench['preset']}, {x264_bench['per_session_fps']:.1f} fps/cam (+{headroom_pct:.0f}% headroom)"
+        if x264_bench["sufficient"]:
+            r.row("libx264 Bench", bench_val, PASS)
+        else:
+            r.row("libx264 Bench", bench_val, FAIL)
+            r.issue(
+                f"libx264 can't sustain {cfg['fps']} fps/cam at any preset (best: {x264_bench['preset']} @ "
+                f"{x264_bench['per_session_fps']:.1f} fps)"
+            )
 
     # RAM
     ram = check_ram()
@@ -93,7 +145,7 @@ def run_preflight(r: Report, cfg: dict, data_volume: str):
 
     # CPU + FD limits
     cpu_count = os.cpu_count() or 1
-    r.check("CPU", f"{cpu_count} cores", good=cpu_count >= 4)
+    r.check("CPU Cores", f"{cpu_count} cores", good=cpu_count >= 4)
 
     fd = check_fd_limits(n)
     r.check("FD Limit", f"{fd['soft']} (need {fd['required']})", good=fd["sufficient"])
@@ -129,8 +181,11 @@ def run_preflight(r: Report, cfg: dict, data_volume: str):
         r.issue(f"Disk metadata latency high ({p99:.0f} ms p99) — segment rollovers may stall")
 
     r.json_data["checks"]["preflight"] = {
+        "profile": profile,
+        "host": host,
         "gpu": gpu,
         "nvenc": has_nvenc,
+        "libx264_benchmark": x264_bench,
         "ram_available_mb": ram["available_mb"],
         "fd_soft": fd["soft"],
         "fs_type": fs_type,
@@ -262,17 +317,20 @@ def run_capacity(r: Report, cfg: dict, disk: dict, total_mp4_bytes: int, wall_ti
     r.row("Queue Memory", f"~{queue_gb:.1f} GB for {cfg['num_cameras']} cameras", "")
 
 
-def run_verdict(r: Report, cfg: dict, report, duration_min: float):
+def run_verdict(r: Report, cfg: dict, report, duration_min: float, profile: str):
     r.log()
     r.log("═" * 60)
 
     has_fatal = report.dropped_frames > 0 or any(kw in i.lower() for i in r.issues for kw in ("failed", "invalid", "not detected", "throttl", "leak"))
 
-    r.json_data["verdict"] = "FAIL" if has_fatal else ("WARN" if r.issues else "PASS")
+    verdict = "FAIL" if has_fatal else ("WARN" if r.issues else "PASS")
+    r.json_data["verdict"] = verdict
+    r.json_data["profile"] = profile
 
+    profile_tag = f"{profile.upper()} profile"
     if not r.issues:
         mon = report.monitor
-        r.log(f"  {PASS} READY for {cfg['num_cameras']}-camera 24/7 deployment")
+        r.log(f"  {PASS} READY for {cfg['num_cameras']}-camera 24/7 deployment ({profile_tag}, encoder {report.encoder})")
         r.log(f"  {PASS} {duration_min:.0f}-min soak: 0 drops, {report.segments_completed} segments, all outputs valid")
         if mon and mon.gpu_temp_samples:
             r.log(f"  {PASS} GPU stable at {mon.gpu_final_temp}°C")
@@ -280,7 +338,7 @@ def run_verdict(r: Report, cfg: dict, report, duration_min: float):
             r.log(f"  {PASS} Memory stable, no leaks")
     else:
         icon = FAIL if has_fatal else WARN
-        r.log(f"  {icon} {'NOT READY' if has_fatal else 'READY WITH WARNINGS'} for {cfg['num_cameras']}-camera deployment")
+        r.log(f"  {icon} {'NOT READY' if has_fatal else 'READY WITH WARNINGS'} for {cfg['num_cameras']}-camera deployment ({profile_tag})")
         r.log()
         for issue in r.issues:
             r.log(f"    {WARN} {issue}")
@@ -297,11 +355,20 @@ def main():
     parser = argparse.ArgumentParser(description="Deployment validation — hardware, disk, pipeline soak, output verification")
     parser.add_argument("--config", type=str, required=True, help="Path to camera config YAML")
     parser.add_argument("-d", "--duration", type=float, default=300.0, help="Soak duration in seconds (default: 300 = 5 min)")
-    parser.add_argument("--force-cpu", action="store_true", help="Force CPU encoding")
+    parser.add_argument(
+        "--profile",
+        choices=("auto", "gpu", "cpu"),
+        default="auto",
+        help="Deployment profile. 'auto' probes NVENC and picks gpu/cpu (default). 'cpu' forces libx264 and skips GPU checks.",
+    )
+    parser.add_argument("--force-cpu", action="store_true", help="Deprecated alias for --profile cpu")
     args = parser.parse_args()
     args.data_volume = "/data"  # Always /data inside the container (mounted from $DATA_VOLUME)
 
     if args.force_cpu:
+        args.profile = "cpu"
+    profile = resolve_profile(args.profile)
+    if profile == "cpu":
         os.environ["FORCE_CPU_ENCODE"] = "1"
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))
 
@@ -323,18 +390,20 @@ def main():
     r = Report()
     r.json_data["config"] = cfg["config_name"]
     r.json_data["timestamp"] = timestamp
+    r.json_data["profile"] = profile
 
     r.header("Deployment Validation")
+    r.log(f"  Profile        {profile}")
     r.log(f"  Config         {cfg['config_name']}.yaml")
     r.log(f"  Cameras        {cfg['num_cameras']}  |  {cfg['fps']} FPS  |  {cfg['mode']}")
     r.log(f"  Segment        {cfg['segment_frames']} frames (test: {test_seg})")
     r.log(f"  Soak           {duration_min:.0f} min")
 
-    disk = run_preflight(r, cfg, args.data_volume)
+    disk = run_preflight(r, cfg, args.data_volume, profile)
     report = run_soak(r, cfg, output_dir, test_seg, args.duration)
     total_bytes = run_verification(r, cfg, output_dir, report, test_seg)
     run_capacity(r, cfg, disk, total_bytes, report.wall_time_s)
-    run_verdict(r, cfg, report, duration_min)
+    run_verdict(r, cfg, report, duration_min, profile)
 
     # Next steps
     r.log()
