@@ -201,15 +201,19 @@ def check_host_info() -> dict:
     return info
 
 
-def check_cpu_capacity(num_cameras: int) -> dict:
+def check_cpu_capacity(num_cameras: int, host: dict | None = None) -> dict:
     """Rough rule: need ≥ 2 logical cores per camera for libx264 `veryfast`.
 
     Returns {logical, physical, required, sufficient, warn_only}.
     - sufficient: ≥ 2× num_cameras logical cores.
     - warn_only: ≥ 1× num_cameras logical cores (likely to keep up at
       `ultrafast` or similar).
+
+    Pass a pre-fetched *host* dict (from ``check_host_info()``) to avoid
+    re-reading /proc/cpuinfo when the caller already has it.
     """
-    host = check_host_info()
+    if host is None:
+        host = check_host_info()
     logical = host["cores_logical"]
     required = num_cameras * 2
     sufficient = logical >= required

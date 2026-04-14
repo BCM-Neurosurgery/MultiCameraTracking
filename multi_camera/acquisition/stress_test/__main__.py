@@ -99,7 +99,7 @@ def run_preflight(r: Report, cfg: dict, data_volume: str, profile: str):
                 r.issue(f"GPU supports only {count} concurrent NVENC sessions, need {n}")
     else:
         # CPU profile: NVENC checks skipped intentionally.
-        cpu_cap = check_cpu_capacity(n)
+        cpu_cap = check_cpu_capacity(n, host=host)
         if cpu_cap["sufficient"]:
             r.row("CPU Capacity", f"{cpu_cap['logical']} threads (need {cpu_cap['required']})", PASS)
         elif cpu_cap["warn_only"]:

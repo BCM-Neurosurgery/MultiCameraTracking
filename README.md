@@ -37,10 +37,10 @@ Key modules:
 
 | Profile | Encoder | Analysis pipeline | When to use |
 |---|---|---|---|
-| `gpu` (default on hosts with NVIDIA GPU) | `h264_nvenc` (hardware) | Installed — SMPL / OpenSim / biomechanics routes work | Recording + analysis hosts |
+| `gpu` | `h264_nvenc` (hardware) | Installed — SMPL / OpenSim / biomechanics routes work | Recording + analysis hosts |
 | `cpu` | `libx264` (software) | **Not installed** — analysis routes return 500 | Acquisition-only hosts without an NVIDIA GPU |
 
-Profile defaults to `gpu`. On CPU-only hosts, pass `PROFILE=cpu` to every `make` invocation (or use the `*-cpu` convenience targets: `make build-cpu`, `make validate-cpu`, etc.).
+The profile is set once per host in `.env` (`MOCAP_PROFILE=gpu` or `MOCAP_PROFILE=cpu`). All Make targets read it from `.env`. There is no runtime auto-detection and no per-command override.
 
 **CPU-profile caveats:**
 - The React frontend and FastAPI backend boot fine, but these routes return HTTP 500 on call because their analysis dependencies (EasyMocap, nimblephysics, pose_pipeline) are not installed: `/mesh`, `/unannotated_recordings`, `/annotation`, `/smpl_trials`, `/smpl`, `/biomechanics_trials`, `/biomechanics`.
@@ -79,28 +79,26 @@ sudo bash setup_network.sh enp4s0   # or specify interface
 cp .env.example .env
 ```
 
-Edit `.env` to set your paths:
+Edit `.env` to set your profile and paths:
 
 ```
+MOCAP_PROFILE=gpu              # or cpu — REQUIRED, no default
 NETWORK_INTERFACE=enp4s0
 DATA_VOLUME=/home/cameras/data
 CAMERA_CONFIGS=/home/cameras/configs
 DATAJOINT_EXTERNAL=/mnt/datajoint_external
 ```
 
+`MOCAP_PROFILE` has no default — `make` will error if it's missing or empty. Every other Make target reads the profile from this file.
+
 ### 3. Build and validate
 
 ```bash
-# GPU host (default)
-make build
-make validate
-
-# CPU-only host — pass PROFILE=cpu to every target, or use the *-cpu aliases
-make build-cpu       # = make build PROFILE=cpu
-make validate-cpu    # = make validate PROFILE=cpu
+make build       # builds the image for the profile set in .env
+make validate    # stress-tests the host under worst-case encoding load
 ```
 
-`make build PROFILE=cpu` produces `peabody124/mocap-cpu` using `docker/Dockerfile.cpu`. `make validate` on either profile stress-tests the host under worst-case encoding load and emits a single PASS/WARN/FAIL verdict in `<DATA_VOLUME>/stress_test/<timestamp>/report.{txt,json}`.
+Output: `<DATA_VOLUME>/stress_test/<timestamp>/report.{txt,json}` with a single PASS/WARN/FAIL verdict.
 
 ### 4. Record
 

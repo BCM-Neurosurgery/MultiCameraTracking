@@ -1,33 +1,43 @@
 # This is the build file for the docker. Note this should be run from the
-# parent directory for the necessary files to be available
+# parent directory for the necessary files to be available.
+#
+# Per-host configuration (including MOCAP_PROFILE=gpu|cpu) lives in .env.
+# Copy .env.example to .env and fill it in before running any target.
 
-.PHONY: clean build run validate endurance build-cpu run-cpu validate-cpu endurance-cpu profile-info
+.PHONY: build run validate endurance profile-info
 
-# detect your host UID/GID
 HOST_UID := $(shell id -u)
 HOST_GID := $(shell id -g)
-
-DIR := ${CURDIR}
-
 GIT_COMMIT := $(shell git rev-parse --short=10 HEAD 2>/dev/null || echo unknown)
 
-# Deployment profile. Default is `gpu`; operators on CPU-only hosts must
-# pass PROFILE=cpu (or use the build-cpu/run-cpu/validate-cpu targets).
-PROFILE ?= gpu
+# .env is the single source of truth for per-host config. Make 'include'
+# imports every KEY=VALUE line as a Make variable.
+ifeq (,$(wildcard .env))
+$(error .env not found. Copy .env.example to .env and set MOCAP_PROFILE)
+endif
+
+include .env
+
+ifeq ($(MOCAP_PROFILE),)
+$(error MOCAP_PROFILE not set in .env. Use 'gpu' or 'cpu'.)
+endif
 
 COMPOSE_gpu := docker-compose.yml
 COMPOSE_cpu := docker-compose.cpu.yml
-COMPOSE := $(COMPOSE_$(PROFILE))
+COMPOSE := $(COMPOSE_$(MOCAP_PROFILE))
 
 ifeq ($(COMPOSE),)
-$(error Unknown PROFILE='$(PROFILE)'. Use PROFILE=gpu or PROFILE=cpu.)
+$(error Unknown MOCAP_PROFILE='$(MOCAP_PROFILE)' in .env. Use 'gpu' or 'cpu'.)
 endif
 
+DURATION ?= 300
+ENDURANCE_DURATION ?= 14400
+
 profile-info:
-	@echo "PROFILE=$(PROFILE)  COMPOSE=$(COMPOSE)"
+	@echo "MOCAP_PROFILE=$(MOCAP_PROFILE)  COMPOSE=$(COMPOSE)"
 
 build:
-	@echo "Building [profile=$(PROFILE)] with HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) GIT_COMMIT=$(GIT_COMMIT)"
+	@echo "Building [profile=$(MOCAP_PROFILE)] HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) GIT_COMMIT=$(GIT_COMMIT)"
 	docker compose -f $(COMPOSE) build \
 	  --build-arg HOST_UID=$(HOST_UID) \
 	  --build-arg HOST_GID=$(HOST_GID) \
@@ -38,34 +48,20 @@ run:
 
 # Deployment validation: loads camera config, checks hardware, disk I/O,
 # runs pipeline stress test with worst-case frames, verifies all outputs.
-# Reports saved to ./validation/
-#   make validate              # 5-min soak (default), profile auto-detected
+# Reports saved under <DATA_VOLUME>/stress_test/<timestamp>/.
+#   make validate              # 5-min soak (default)
 #   make validate DURATION=600 # 10-minute soak
-#   make validate PROFILE=cpu  # force CPU encode path
-DURATION ?= 300
 validate:
 	docker compose -f $(COMPOSE) run --rm --entrypoint "" mocap \
 	  python3 -m multi_camera.acquisition.stress_test \
-	    --config /configs/camera_config.yaml -d $(DURATION) --profile $(PROFILE)
+	    --config /configs/camera_config.yaml -d $(DURATION) --profile $(MOCAP_PROFILE)
 
 # Endurance test: real cameras + noise-injected worst-case encoding.
 # Proves pipeline survives extended operation under maximum load.
-#   make endurance                        # 4-hour default, profile auto-detected
-#   make endurance ENDURANCE_DURATION=86400   # 24-hour soak
-#   make endurance ENDURANCE_DURATION=691200  # 8-day soak
-#   make endurance PROFILE=cpu            # force CPU encode path
-ENDURANCE_DURATION ?= 14400
+#   make endurance                             # 4-hour default
+#   make endurance ENDURANCE_DURATION=86400    # 24-hour soak
+#   make endurance ENDURANCE_DURATION=691200   # 8-day soak
 endurance:
 	docker compose -f $(COMPOSE) run --rm --entrypoint "" mocap \
 	  python3 -m multi_camera.acquisition.endurance_test \
-	    --config /configs/camera_config.yaml -d $(ENDURANCE_DURATION) --profile $(PROFILE)
-
-# Explicit CPU convenience targets (equivalent to <target> PROFILE=cpu).
-build-cpu:
-	@$(MAKE) build PROFILE=cpu
-run-cpu:
-	@$(MAKE) run PROFILE=cpu
-validate-cpu:
-	@$(MAKE) validate PROFILE=cpu
-endurance-cpu:
-	@$(MAKE) endurance PROFILE=cpu
+	    --config /configs/camera_config.yaml -d $(ENDURANCE_DURATION) --profile $(MOCAP_PROFILE)

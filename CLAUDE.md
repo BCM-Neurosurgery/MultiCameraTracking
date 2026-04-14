@@ -12,13 +12,13 @@ Multi-camera video acquisition and biomechanics analysis system. Captures synchr
 # Install
 pip install -r requirements.txt && pip install -e .
 
-# Docker build — Makefile detects HOST_UID/HOST_GID. PROFILE defaults to gpu;
-# CPU-only hosts pass PROFILE=cpu (or use the build-cpu / validate-cpu aliases).
-make build                    # GPU image (peabody124/mocap)
-make build PROFILE=cpu        # CPU image (peabody124/mocap-cpu)
-make validate                 # stress-test (GPU profile)
-make validate PROFILE=cpu     # stress-test the CPU encode path
-make endurance                # 4-hour real-camera soak (GPU profile)
+# Docker build — Makefile reads MOCAP_PROFILE (gpu|cpu) from .env.
+# Copy .env.example → .env and set MOCAP_PROFILE before running any target.
+# There is no default and no per-command override; `make` errors if unset.
+make build            # builds the image for the profile in .env
+make run              # interactive shell inside the container
+make validate         # stress-test (5-min soak, worst-case synthetic frames)
+make endurance        # 4-hour real-camera soak (ENDURANCE_DURATION to override)
 
 # Run recording
 python -m multi_camera.acquisition.flir_recording_api [-m MAX_FRAMES] [-n NUM_CAMS] [--preview] vid_filename
@@ -77,8 +77,8 @@ journal files → encode_worker (ffmpeg subprocess) → .mp4
 ## Key Constraints
 
 - **Python 3.10** in Docker container. GPU profile base: `nvidia/cuda:12.2.2-runtime-ubuntu22.04`; CPU profile base: `ubuntu:22.04`. Spinnaker SDK 4.3 and BtbN ffmpeg (includes libx264 and NVENC symbols) are baked into both images.
-- **Deployment profiles:** `PROFILE=gpu` (default) uses `docker-compose.yml` + `docker/Dockerfile`; `PROFILE=cpu` uses `docker-compose.cpu.yml` + `docker/Dockerfile.cpu` and installs `requirements-cpu.txt` (no JAX). There is no auto-detection — operators pick the profile explicitly. Analysis deps (EasyMocap) are gated behind the `INSTALL_ANALYSIS` build arg — default `true` on GPU, `false` on CPU. Acquisition + FastAPI backend + React frontend are CPU-compatible; the 7 analysis routes (`/mesh`, `/smpl*`, `/biomechanics*`, `/annotation`, `/unannotated_recordings`) return HTTP 500 on the CPU image because their deps aren't installed.
-- **Stress / endurance tests** take `--profile {gpu,cpu}` (default `gpu`). Under CPU profile, preflight skips NVENC checks and benchmarks libx264 presets (`medium → ultrafast`), failing if none sustain target fps + 40% headroom. `--force-cpu` is preserved as a deprecated alias.
+- **Deployment profiles:** `MOCAP_PROFILE` in `.env` is the single source of truth — no default, no auto-detection, no per-command override. `gpu` → `docker-compose.yml` + `docker/Dockerfile`; `cpu` → `docker-compose.cpu.yml` + `docker/Dockerfile.cpu` + `requirements-cpu.txt` (no JAX). Analysis deps (EasyMocap) are gated behind the `INSTALL_ANALYSIS` build arg — default `true` on GPU, `false` on CPU. Acquisition + FastAPI backend + React frontend are CPU-compatible; the 7 analysis routes (`/mesh`, `/smpl*`, `/biomechanics*`, `/annotation`, `/unannotated_recordings`) return HTTP 500 on the CPU image because their deps aren't installed.
+- **Stress / endurance tests** take `--profile {gpu,cpu}` (the Makefile passes this from `MOCAP_PROFILE`). Under CPU profile, preflight skips NVENC checks and benchmarks libx264 presets (`medium → ultrafast`), failing if none sustain target fps + 40% headroom. `--force-cpu` is preserved as a deprecated alias.
 - **Encoder selection:** the `docker-compose.cpu.yml` container sets `FORCE_CPU_ENCODE=1`, which `recorder_service._detect_encoder()` honors — no runtime probing on CPU hosts. GPU profile relies on `gpu_detect.detect_nvenc()` to confirm NVENC is functional inside the container. No Python code change was needed for the CPU encode path — the libx264 fallback already existed.
 - **Black formatter** with line-length=150 (configured in `pyproject.toml`)
 - **No pre-commit hooks or CI** currently configured
