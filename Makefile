@@ -11,10 +11,9 @@ DIR := ${CURDIR}
 
 GIT_COMMIT := $(shell git rev-parse --short=10 HEAD 2>/dev/null || echo unknown)
 
-# Deployment profile. Auto-detects NVIDIA GPU via nvidia-smi; override with
-# `make <target> PROFILE=cpu` (e.g. to stress-test the CPU encode path on a
-# GPU host).
-PROFILE ?= $(shell if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then echo gpu; else echo cpu; fi)
+# Deployment profile. Default is `gpu`; operators on CPU-only hosts must
+# pass PROFILE=cpu (or use the build-cpu/run-cpu/validate-cpu targets).
+PROFILE ?= gpu
 
 COMPOSE_gpu := docker-compose.yml
 COMPOSE_cpu := docker-compose.cpu.yml

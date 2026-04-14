@@ -40,7 +40,7 @@ Key modules:
 | `gpu` (default on hosts with NVIDIA GPU) | `h264_nvenc` (hardware) | Installed — SMPL / OpenSim / biomechanics routes work | Recording + analysis hosts |
 | `cpu` | `libx264` (software) | **Not installed** — analysis routes return 500 | Acquisition-only hosts without an NVIDIA GPU |
 
-`make` auto-detects the profile via `nvidia-smi`. Override with `make <target> PROFILE=cpu` (useful for stress-testing the CPU encode path on a GPU host).
+Profile defaults to `gpu`. On CPU-only hosts, pass `PROFILE=cpu` to every `make` invocation (or use the `*-cpu` convenience targets: `make build-cpu`, `make validate-cpu`, etc.).
 
 **CPU-profile caveats:**
 - The React frontend and FastAPI backend boot fine, but these routes return HTTP 500 on call because their analysis dependencies (EasyMocap, nimblephysics, pose_pipeline) are not installed: `/mesh`, `/unannotated_recordings`, `/annotation`, `/smpl_trials`, `/smpl`, `/biomechanics_trials`, `/biomechanics`.
@@ -91,8 +91,13 @@ DATAJOINT_EXTERNAL=/mnt/datajoint_external
 ### 3. Build and validate
 
 ```bash
-make build       # Build Docker image (profile auto-detected; override with PROFILE=cpu)
-make validate    # Run deployment validation (5-min soak, configurable)
+# GPU host (default)
+make build
+make validate
+
+# CPU-only host — pass PROFILE=cpu to every target, or use the *-cpu aliases
+make build-cpu       # = make build PROFILE=cpu
+make validate-cpu    # = make validate PROFILE=cpu
 ```
 
 `make build PROFILE=cpu` produces `peabody124/mocap-cpu` using `docker/Dockerfile.cpu`. `make validate` on either profile stress-tests the host under worst-case encoding load and emits a single PASS/WARN/FAIL verdict in `<DATA_VOLUME>/stress_test/<timestamp>/report.{txt,json}`.

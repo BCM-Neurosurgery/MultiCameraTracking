@@ -16,7 +16,6 @@ from datetime import datetime
 
 import yaml
 
-from multi_camera.acquisition.flir.gpu_detect import detect_nvenc
 from multi_camera.acquisition.stress_test._preflight import (
     benchmark_disk_metadata,
     benchmark_disk_write,
@@ -34,13 +33,6 @@ from multi_camera.acquisition.stress_test._preflight import (
 from multi_camera.acquisition.stress_test._runner import run_stress_test
 from multi_camera.acquisition.stress_test._verify import verify_mp4_files, verify_metadata_files
 from multi_camera.acquisition.stress_test._report import Report, PASS, FAIL, WARN
-
-
-def resolve_profile(profile_arg: str) -> str:
-    """auto → 'gpu' if NVENC functional, else 'cpu'. gpu/cpu pass through."""
-    if profile_arg in ("gpu", "cpu"):
-        return profile_arg
-    return "gpu" if detect_nvenc() else "cpu"
 
 
 def load_config(config_path: str) -> dict:
@@ -357,9 +349,9 @@ def main():
     parser.add_argument("-d", "--duration", type=float, default=300.0, help="Soak duration in seconds (default: 300 = 5 min)")
     parser.add_argument(
         "--profile",
-        choices=("auto", "gpu", "cpu"),
-        default="auto",
-        help="Deployment profile. 'auto' probes NVENC and picks gpu/cpu (default). 'cpu' forces libx264 and skips GPU checks.",
+        choices=("gpu", "cpu"),
+        default="gpu",
+        help="Deployment profile. 'gpu' (default) uses NVENC; 'cpu' uses libx264 and skips GPU checks.",
     )
     parser.add_argument("--force-cpu", action="store_true", help="Deprecated alias for --profile cpu")
     args = parser.parse_args()
@@ -367,7 +359,7 @@ def main():
 
     if args.force_cpu:
         args.profile = "cpu"
-    profile = resolve_profile(args.profile)
+    profile = args.profile
     if profile == "cpu":
         os.environ["FORCE_CPU_ENCODE"] = "1"
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))

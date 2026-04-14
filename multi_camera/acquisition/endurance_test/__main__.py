@@ -21,7 +21,7 @@ from datetime import datetime
 
 from multi_camera.acquisition.stress_test._verify import verify_mp4_files, verify_metadata_files
 from multi_camera.acquisition.stress_test._report import Report, PASS, FAIL, WARN
-from multi_camera.acquisition.stress_test.__main__ import load_config, resolve_profile, run_preflight, run_capacity
+from multi_camera.acquisition.stress_test.__main__ import load_config, run_preflight, run_capacity
 from multi_camera.acquisition.endurance_test._runner import EnduranceRecorder, EnduranceReport, SegmentCleaner
 from multi_camera.acquisition.endurance_test._monitor import EnduranceMonitor
 from multi_camera.acquisition.flir.storage.finalize_jobs_repo import get_finalize_jobs_db_path
@@ -352,9 +352,9 @@ def main():
     parser.add_argument("--no-inject-noise", action="store_true", help="Disable noise injection (default: noise ON)")
     parser.add_argument(
         "--profile",
-        choices=("auto", "gpu", "cpu"),
-        default="auto",
-        help="Deployment profile. 'auto' probes NVENC and picks gpu/cpu (default). 'cpu' forces libx264.",
+        choices=("gpu", "cpu"),
+        default="gpu",
+        help="Deployment profile. 'gpu' (default) uses NVENC; 'cpu' uses libx264.",
     )
     parser.add_argument("--force-cpu", action="store_true", help="Deprecated alias for --profile cpu")
     parser.add_argument("--monitor-interval", type=float, default=60.0, help="Monitoring sample interval in seconds (default: 60)")
@@ -363,7 +363,7 @@ def main():
 
     if args.force_cpu:
         args.profile = "cpu"
-    profile = resolve_profile(args.profile)
+    profile = args.profile
     if profile == "cpu":
         os.environ["FORCE_CPU_ENCODE"] = "1"
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))
