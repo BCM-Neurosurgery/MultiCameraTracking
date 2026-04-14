@@ -1,0 +1,17 @@
+# GPU profile overlay. Pair with docker-compose.yml via:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml ...
+# (The Makefile does this automatically when MOCAP_PROFILE=gpu in .env.)
+services:
+  mocap:
+    build:
+      dockerfile: ./docker/Dockerfile
+    image: peabody124/mocap
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -194,7 +194,8 @@ meta-info:
 
 ```bash
 # Install locally (outside Docker)
-pip install -r requirements.txt
+#   Pick requirements-gpu.txt (includes JAX) or requirements-cpu.txt (no JAX)
+pip install -r requirements-gpu.txt
 pip install -e .
 
 # Format (Black, line-length 150)

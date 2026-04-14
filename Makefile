@@ -22,29 +22,32 @@ ifeq ($(MOCAP_PROFILE),)
 $(error MOCAP_PROFILE not set in .env. Use 'gpu' or 'cpu'.)
 endif
 
-COMPOSE_gpu := docker-compose.yml
-COMPOSE_cpu := docker-compose.cpu.yml
-COMPOSE := $(COMPOSE_$(MOCAP_PROFILE))
+OVERLAY_gpu := docker-compose.gpu.yml
+OVERLAY_cpu := docker-compose.cpu.yml
+OVERLAY := $(OVERLAY_$(MOCAP_PROFILE))
 
-ifeq ($(COMPOSE),)
+ifeq ($(OVERLAY),)
 $(error Unknown MOCAP_PROFILE='$(MOCAP_PROFILE)' in .env. Use 'gpu' or 'cpu'.)
 endif
+
+COMPOSE := -f docker-compose.yml -f $(OVERLAY)
 
 DURATION ?= 300
 ENDURANCE_DURATION ?= 14400
 
 profile-info:
-	@echo "MOCAP_PROFILE=$(MOCAP_PROFILE)  COMPOSE=$(COMPOSE)"
+	@echo "MOCAP_PROFILE=$(MOCAP_PROFILE)  OVERLAY=$(OVERLAY)"
+	@echo "COMPOSE=$(COMPOSE)"
 
 build:
 	@echo "Building [profile=$(MOCAP_PROFILE)] HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) GIT_COMMIT=$(GIT_COMMIT)"
-	docker compose -f $(COMPOSE) build \
+	docker compose $(COMPOSE) build \
 	  --build-arg HOST_UID=$(HOST_UID) \
 	  --build-arg HOST_GID=$(HOST_GID) \
 	  --build-arg GIT_COMMIT=$(GIT_COMMIT)
 
 run:
-	docker compose -f $(COMPOSE) run --rm mocap
+	docker compose $(COMPOSE) run --rm mocap
 
 # Deployment validation: loads camera config, checks hardware, disk I/O,
 # runs pipeline stress test with worst-case frames, verifies all outputs.
@@ -52,7 +55,7 @@ run:
 #   make validate              # 5-min soak (default)
 #   make validate DURATION=600 # 10-minute soak
 validate:
-	docker compose -f $(COMPOSE) run --rm --entrypoint "" mocap \
+	docker compose $(COMPOSE) run --rm --entrypoint "" mocap \
 	  python3 -m multi_camera.acquisition.stress_test \
 	    --config /configs/camera_config.yaml -d $(DURATION) --profile $(MOCAP_PROFILE)
 
@@ -62,6 +65,6 @@ validate:
 #   make endurance ENDURANCE_DURATION=86400    # 24-hour soak
 #   make endurance ENDURANCE_DURATION=691200   # 8-day soak
 endurance:
-	docker compose -f $(COMPOSE) run --rm --entrypoint "" mocap \
+	docker compose $(COMPOSE) run --rm --entrypoint "" mocap \
 	  python3 -m multi_camera.acquisition.endurance_test \
 	    --config /configs/camera_config.yaml -d $(ENDURANCE_DURATION) --profile $(MOCAP_PROFILE)

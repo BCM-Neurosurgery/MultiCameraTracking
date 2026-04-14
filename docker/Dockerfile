@@ -85,10 +85,10 @@ RUN pip3 install --upgrade pip && \
 ### Performance libraries
 RUN pip3 install tbb numba
 
-### MultiCameraTracking
+### MultiCameraTracking — GPU requirements (includes JAX)
 WORKDIR /Mocap
-COPY requirements.txt ./
-RUN pip3 install -r requirements.txt
+COPY requirements-gpu.txt ./
+RUN pip3 install -r requirements-gpu.txt
 COPY pyproject.toml README.md ./
 COPY multi_camera ./multi_camera
 COPY model_data ./model_data

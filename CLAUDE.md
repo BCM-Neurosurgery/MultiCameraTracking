@@ -9,8 +9,8 @@ Multi-camera video acquisition and biomechanics analysis system. Captures synchr
 ## Build & Run
 
 ```bash
-# Install
-pip install -r requirements.txt && pip install -e .
+# Install (pick requirements-gpu.txt or requirements-cpu.txt)
+pip install -r requirements-gpu.txt && pip install -e .
 
 # Docker build — Makefile reads MOCAP_PROFILE (gpu|cpu) from .env.
 # Copy .env.example → .env and set MOCAP_PROFILE before running any target.
