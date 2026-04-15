@@ -56,7 +56,12 @@ def check_nvenc() -> bool:
 
 
 def check_nvenc_concurrent(num_sessions: int) -> tuple[bool, int]:
-    """Launch *num_sessions* concurrent NVENC encodes. Returns (all_ok, succeeded_count)."""
+    """Launch *num_sessions* concurrent NVENC encodes. Returns (all_ok, succeeded_count).
+
+    Uses a 10-second testsrc so all sessions stay open simultaneously — short
+    inputs finish before all processes have opened their NVENC session, hiding
+    session-cap failures (error 21 "incompatible client key" on Pascal GeForce).
+    """
     cmd = [
         "ffmpeg",
         "-y",
@@ -66,9 +71,11 @@ def check_nvenc_concurrent(num_sessions: int) -> tuple[bool, int]:
         "-f",
         "lavfi",
         "-i",
-        "nullsrc=s=1920x1200:d=0.5",
+        "testsrc=duration=10:size=1920x1200:rate=30",
         "-c:v",
         "h264_nvenc",
+        "-preset",
+        "p1",
         "-f",
         "null",
         "-",
@@ -76,8 +83,12 @@ def check_nvenc_concurrent(num_sessions: int) -> tuple[bool, int]:
     procs = []
     try:
         for _ in range(num_sessions):
-            procs.append(subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        succeeded = sum(1 for p in procs if p.wait(timeout=15) == 0)
+            procs.append(subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE))
+        succeeded = 0
+        for p in procs:
+            _, err = p.communicate(timeout=30)
+            if p.returncode == 0 and b"OpenEncodeSessionEx" not in err:
+                succeeded += 1
     except Exception:
         for p in procs:
             try:
