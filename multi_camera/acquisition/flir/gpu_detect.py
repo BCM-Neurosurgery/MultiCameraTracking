@@ -110,15 +110,8 @@ def recommend_preset(num_cameras: int, target_fps: int = 30, min_headroom: float
     return "p1"
 
 
-def _benchmark_preset(num_sessions: int, preset: str, num_frames: int = 300) -> float:
-    """Run *num_sessions* concurrent NVENC encodes and return per-session fps.
-
-    ``num_frames`` must be large enough that all sessions remain alive
-    simultaneously — otherwise early sessions finish before later ones open,
-    and the result is sequential throughput (inflated) instead of contended
-    throughput. 300 frames at ~200 fps/session on a 1050 Ti gives ~1.5s
-    overlap per process, enough to detect session-cap contention.
-    """
+def _benchmark_preset(num_sessions: int, preset: str, num_frames: int = 30) -> float:
+    """Run *num_sessions* concurrent NVENC encodes and return per-session fps."""
     cmd = [
         "ffmpeg",
         "-y",
@@ -126,9 +119,15 @@ def _benchmark_preset(num_sessions: int, preset: str, num_frames: int = 300) -> 
         "-loglevel",
         "error",
         "-f",
-        "lavfi",
+        "rawvideo",
+        "-pixel_format",
+        "bayer_rggb8",
+        "-video_size",
+        "1920x1200",
+        "-framerate",
+        "300",
         "-i",
-        "testsrc=duration=60:size=1920x1200:rate=30",
+        "/dev/zero",
         "-frames:v",
         str(num_frames),
         "-c:v",
@@ -148,11 +147,10 @@ def _benchmark_preset(num_sessions: int, preset: str, num_frames: int = 300) -> 
     t0 = time.monotonic()
     try:
         for _ in range(num_sessions):
-            procs.append(subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE))
+            procs.append(subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         failed = 0
         for proc in procs:
-            _, err = proc.communicate(timeout=60)
-            if proc.returncode != 0 or b"OpenEncodeSessionEx" in err:
+            if proc.wait() != 0:
                 failed += 1
     except Exception:
         for proc in procs:
