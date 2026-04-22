@@ -10,13 +10,15 @@ HOST_GID := $(shell id -g)
 DIR := ${CURDIR}
 
 GIT_COMMIT := $(shell git rev-parse --short=10 HEAD 2>/dev/null || echo unknown)
+GIT_DESCRIBE := $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
 
 build:
-	@echo "Building with HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) GIT_COMMIT=$(GIT_COMMIT)"
+	@echo "Building with HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) GIT_COMMIT=$(GIT_COMMIT) GIT_DESCRIBE=$(GIT_DESCRIBE)"
 	docker compose build \
 	  --build-arg HOST_UID=$(HOST_UID) \
 	  --build-arg HOST_GID=$(HOST_GID) \
-	  --build-arg GIT_COMMIT=$(GIT_COMMIT)
+	  --build-arg GIT_COMMIT=$(GIT_COMMIT) \
+	  --build-arg GIT_DESCRIBE=$(GIT_DESCRIBE)
 
 run:
 	docker compose run --rm mocap

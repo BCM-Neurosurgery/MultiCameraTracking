@@ -1,11 +1,20 @@
-"""Software version and git metadata — computed once at import time."""
+"""Software version and git metadata — computed once at import time.
+
+VERSION is auto-derived from ``git describe --tags --always --dirty``, so
+tagging a release (``git tag -a v1.2.3``) is the only step needed to bump the
+version that appears in logs, the FastAPI banner, and per-recording metadata.
+"""
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
-VERSION = "1.0.0"
+# Matches the leading semver portion of a `git describe` output.
+# Examples that match: "v1.1.3", "v1.1.3-2-g390fc9b", "v1.1.3-dirty",
+# "v1.1.3-2-g390fc9b-dirty". A bare commit hash from `--always` does not match.
+_VERSION_RE = re.compile(r"^v?(\d+\.\d+\.\d+)")
 
 
 def _git_info() -> dict:
@@ -13,7 +22,7 @@ def _git_info() -> dict:
 
     Resolution order:
     1. ``git`` CLI (works in dev and anywhere ``.git/`` is present)
-    2. ``GIT_COMMIT`` environment variable (set at Docker build time)
+    2. ``GIT_DESCRIBE`` / ``GIT_COMMIT`` env vars (set at Docker build time)
     3. Falls back to ``"unknown"``
     """
     info = {"commit": "unknown", "commit_short": "unknown", "dirty": False, "describe": "unknown"}
@@ -28,11 +37,16 @@ def _git_info() -> dict:
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
-    # Fallback: Docker build-time env var.
-    env_commit = os.environ.get("GIT_COMMIT", "")
+    # Fallback: Docker build-time env vars.
+    env_describe = os.environ.get("GIT_DESCRIBE", "").strip()
+    env_commit = os.environ.get("GIT_COMMIT", "").strip()
     if env_commit:
         info["commit"] = env_commit
         info["commit_short"] = env_commit[:10]
+    if env_describe:
+        info["describe"] = env_describe
+        info["dirty"] = env_describe.endswith("-dirty")
+    elif env_commit:
         info["describe"] = env_commit[:10]
 
     return info
@@ -41,7 +55,26 @@ def _git_info() -> dict:
 GIT_INFO = _git_info()
 
 
+def _parse_version(describe: str) -> str:
+    """Extract a ``MAJOR.MINOR.PATCH`` string from describe output."""
+    match = _VERSION_RE.match(describe or "")
+    return match.group(1) if match else "0.0.0"
+
+
+VERSION = _parse_version(GIT_INFO["describe"])
+
+
 def version_string() -> str:
-    """Human-readable version, e.g. ``'v1.0.0 (abc1234def)'`` or ``'v1.0.0 (abc1234def, dirty)'``."""
-    dirty = ", dirty" if GIT_INFO["dirty"] else ""
-    return f"v{VERSION} ({GIT_INFO['commit_short']}{dirty})"
+    """Human-readable version derived from ``git describe``.
+
+    Examples:
+        ``v1.1.3``                  — exactly on tag, clean tree
+        ``v1.1.3-dirty``            — exactly on tag, working tree dirty
+        ``v1.1.3-2-g390fc9b``       — 2 commits past tag
+        ``v1.1.3-2-g390fc9b-dirty`` — 2 commits past tag, dirty
+        ``390fc9b``                 — no tags reachable; bare hash
+    """
+    desc = GIT_INFO.get("describe") or "unknown"
+    if desc == "unknown":
+        return f"unknown ({GIT_INFO.get('commit_short', 'unknown')})"
+    return desc
