@@ -63,7 +63,7 @@ echo "    Driver: ${DRIVER_VER}"
 echo ""
 echo "==> [2/5] Checking current persistence state..."
 
-CURRENT_PM=$(nvidia-smi -q | awk -F': ' '/Persistence Mode/ {print $2; exit}')
+CURRENT_PM=$(nvidia-smi -q | awk -F': ' '/Persistence Mode/ && !seen {print $2; seen=1}')
 CURRENT_EXECSTART=$(systemctl show nvidia-persistenced.service -p ExecStart --value | tr -d '\n')
 
 echo "    Reported by nvidia-smi: ${CURRENT_PM:-unknown}"
@@ -172,7 +172,7 @@ else
   echo "    ExecStart flag           ✓ --no-persistence-mode removed"
 fi
 
-NEW_PM=$(nvidia-smi -q | awk -F': ' '/Persistence Mode/ {print $2; exit}')
+NEW_PM=$(nvidia-smi -q | awk -F': ' '/Persistence Mode/ && !seen {print $2; seen=1}')
 if [ "${NEW_PM}" = "Enabled" ]; then
   echo "    nvidia-smi reports       ✓ Persistence Mode: Enabled"
 else
