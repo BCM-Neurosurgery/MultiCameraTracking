@@ -89,7 +89,8 @@ else
   PASS=false
 fi
 
-if docker run --rm --gpus all nvidia/cuda:12.2.2-base-ubuntu22.04 \
+if docker run --rm --gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+    nvidia/cuda:12.2.2-base-ubuntu22.04 \
     bash -c 'ls /usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1 2>/dev/null || ls /usr/lib/libnvidia-encode.so.1 2>/dev/null' &>/dev/null; then
   echo "    NVENC in container    ✓"
 else
