@@ -35,7 +35,10 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "StreamDroppedFrameCount",
     "StreamLostFrameCount",
     "StreamIncompleteFrameCount",
-    # GVSP packet-level pressure.
+    # GVSP packet-level signals. ReceivedPacketCount ticks at ~7.8 kHz/cam
+    # so it's the counter most likely to surface a 16-bit rollover (see
+    # TRBD002 timing analysis: R1->R2 gap is within 1.6% of 2^16).
+    "StreamReceivedPacketCount",
     "StreamMissedPacketCount",
     "StreamPacketResendRequestCount",
     "StreamPacketResendRequestTimeoutCount",
@@ -44,8 +47,11 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "StreamIncompleteFrameResendRequestQueueOverrunCount",
     "StreamLostFrameReceptionStorageOverrunCount",
     "StreamLostFrameReceptionQueueOverrunCount",
-    # Per-frame timing maxima (microseconds), pipeline pressure indicators.
+    # Per-frame timing (microseconds). Last = tick-to-tick trend detection;
+    # Max = session-cumulative worst-case (latches, doesn't decrease).
+    "StreamFrameReceptionTimeLast",
     "StreamFrameReceptionTimeMax",
+    "StreamFrameProcessingTimeLast",
     "StreamFrameProcessingTimeMax",
 )
 
@@ -59,6 +65,7 @@ _SHORT: Mapping[str, str] = {
     "StreamDroppedFrameCount": "drop",
     "StreamLostFrameCount": "lost",
     "StreamIncompleteFrameCount": "incomp",
+    "StreamReceivedPacketCount": "recv_pkt",
     "StreamMissedPacketCount": "miss_pkt",
     "StreamPacketResendRequestCount": "resend_req",
     "StreamPacketResendRequestTimeoutCount": "resend_to",
@@ -66,8 +73,10 @@ _SHORT: Mapping[str, str] = {
     "StreamIncompleteFrameResendRequestQueueOverrunCount": "q_resend",
     "StreamLostFrameReceptionStorageOverrunCount": "q_storage",
     "StreamLostFrameReceptionQueueOverrunCount": "q_recv",
-    "StreamFrameReceptionTimeMax": "t_recv_us",
-    "StreamFrameProcessingTimeMax": "t_proc_us",
+    "StreamFrameReceptionTimeLast": "t_recv_last",
+    "StreamFrameReceptionTimeMax": "t_recv_max",
+    "StreamFrameProcessingTimeLast": "t_proc_last",
+    "StreamFrameProcessingTimeMax": "t_proc_max",
 }
 
 _CONFIG_NAMES: tuple[str, ...] = (
