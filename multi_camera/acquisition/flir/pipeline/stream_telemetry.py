@@ -23,14 +23,30 @@ from typing import Callable, Iterable, Mapping, Optional
 log = logging.getLogger("flir_pipeline")
 
 _COUNTER_NAMES: tuple[str, ...] = (
+    # Buffer pool occupancy (live state).
     "StreamInputBufferCount",
     "StreamOutputBufferCount",
     "StreamAnnouncedBufferCount",
+    # Frame counts (cumulative since acquisition start).
     "StreamStartedFrameCount",
+    "StreamReceivedFrameCount",
+    "StreamDeliveredFrameCount",
+    # Frame failures (cumulative).
     "StreamDroppedFrameCount",
     "StreamLostFrameCount",
     "StreamIncompleteFrameCount",
-    "StreamFailedBufferCount",
+    # GVSP packet-level pressure.
+    "StreamMissedPacketCount",
+    "StreamPacketResendRequestCount",
+    "StreamPacketResendRequestTimeoutCount",
+    # Internal queue / storage overruns — most likely culprits for GenTL -1011.
+    "StreamIncompleteFrameTransferQueueOverrunCount",
+    "StreamIncompleteFrameResendRequestQueueOverrunCount",
+    "StreamLostFrameReceptionStorageOverrunCount",
+    "StreamLostFrameReceptionQueueOverrunCount",
+    # Per-frame timing maxima (microseconds), pipeline pressure indicators.
+    "StreamFrameReceptionTimeMax",
+    "StreamFrameProcessingTimeMax",
 )
 
 _SHORT: Mapping[str, str] = {
@@ -38,11 +54,26 @@ _SHORT: Mapping[str, str] = {
     "StreamOutputBufferCount": "out",
     "StreamAnnouncedBufferCount": "ann",
     "StreamStartedFrameCount": "started",
+    "StreamReceivedFrameCount": "received",
+    "StreamDeliveredFrameCount": "delivered",
     "StreamDroppedFrameCount": "drop",
     "StreamLostFrameCount": "lost",
     "StreamIncompleteFrameCount": "incomp",
-    "StreamFailedBufferCount": "failed",
+    "StreamMissedPacketCount": "miss_pkt",
+    "StreamPacketResendRequestCount": "resend_req",
+    "StreamPacketResendRequestTimeoutCount": "resend_to",
+    "StreamIncompleteFrameTransferQueueOverrunCount": "q_xfer",
+    "StreamIncompleteFrameResendRequestQueueOverrunCount": "q_resend",
+    "StreamLostFrameReceptionStorageOverrunCount": "q_storage",
+    "StreamLostFrameReceptionQueueOverrunCount": "q_recv",
+    "StreamFrameReceptionTimeMax": "t_recv_us",
+    "StreamFrameProcessingTimeMax": "t_proc_us",
 }
+
+_CONFIG_NAMES: tuple[str, ...] = (
+    "StreamBufferCountManual",
+    "StreamBufferCountMax",
+)
 
 
 def _default_int_ptr(node):
@@ -67,10 +98,12 @@ class StreamTelemetry:
     ):
         self._handles: dict[str, dict[str, object]] = {}
         self._missing: dict[str, list[str]] = {}
+        self._config: dict[str, dict[str, Optional[int]]] = {}
         for camera in cameras:
             sn = serial_map[id(camera)]
             self._handles[sn] = {}
             self._missing[sn] = []
+            self._config[sn] = {}
             # simple_pyspin.Camera wraps the raw PySpin camera as .cam and only forwards
             # GenICam node attributes via __getattr__; methods like GetTLStreamNodeMap
             # must be called on the inner camera. Fall back to the camera itself for
@@ -95,6 +128,17 @@ class StreamTelemetry:
                 except Exception as exc:
                     log.debug("StreamTelemetry %s/%s: resolve failed (%s)", sn, name, exc)
                     self._missing[sn].append(name)
+            for name in _CONFIG_NAMES:
+                try:
+                    node = nodemap.GetNode(name)
+                    if node is None:
+                        continue
+                    ptr = int_ptr_factory(node)
+                    if not is_readable(ptr):
+                        continue
+                    self._config[sn][name] = int(ptr.GetValue())
+                except Exception as exc:
+                    log.debug("StreamTelemetry %s/%s: config read failed (%s)", sn, name, exc)
 
     def serials(self) -> list[str]:
         return list(self._handles.keys())
@@ -111,6 +155,10 @@ class StreamTelemetry:
 
     def log_baseline(self) -> None:
         for sn in self._handles:
+            cfg = self._config.get(sn, {})
+            if cfg:
+                cfg_parts = " ".join(f"{name}={val}" for name, val in cfg.items())
+                log.info("StreamConfig %s %s", sn, cfg_parts)
             stats = self.poll(sn)
             log.info("StreamStats %s reason=baseline %s", sn, _format(stats))
             missing = self._missing.get(sn, [])
