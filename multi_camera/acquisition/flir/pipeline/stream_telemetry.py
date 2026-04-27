@@ -71,8 +71,13 @@ class StreamTelemetry:
             sn = serial_map[id(camera)]
             self._handles[sn] = {}
             self._missing[sn] = []
+            # simple_pyspin.Camera wraps the raw PySpin camera as .cam and only forwards
+            # GenICam node attributes via __getattr__; methods like GetTLStreamNodeMap
+            # must be called on the inner camera. Fall back to the camera itself for
+            # raw-PySpin or test-mock instances.
+            raw = getattr(camera, "cam", camera)
             try:
-                nodemap = camera.GetTLStreamNodeMap()
+                nodemap = raw.GetTLStreamNodeMap()
             except Exception as exc:
                 log.warning("StreamTelemetry %s: GetTLStreamNodeMap failed (%s)", sn, exc)
                 continue
