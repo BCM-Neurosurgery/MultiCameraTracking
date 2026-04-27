@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from multi_camera.acquisition.flir.capture_loop import get_image_with_timeout, is_image_timeout_error
 from multi_camera.acquisition.flir.pipeline.queues import put_metadata_or_fail, safe_put
+from multi_camera.acquisition.flir.pipeline.stream_telemetry import StreamTelemetry
 
 log = logging.getLogger("flir_pipeline")
 
@@ -27,6 +28,7 @@ def run_capture_loop(recorder, max_frames: int, health=None):
     image_timeout_ms = int(acquisition_settings.get("image_timeout_ms", 1000))
     max_consecutive_timeouts = int(acquisition_settings.get("max_consecutive_timeouts", 30))
     metadata_queue_timeout_s = float(acquisition_settings.get("metadata_queue_timeout_s", 2.0))
+    stream_telemetry_interval = int(acquisition_settings.get("stream_telemetry_interval", 300))
     # Cache serials and static camera properties once to avoid per-frame
     # PySpin property reads that throw SpinnakerException on disconnect.
     serial_map = {id(camera): camera.DeviceSerialNumber for camera in recorder.cams}
@@ -39,6 +41,9 @@ def run_capture_loop(recorder, max_frames: int, health=None):
             "frame_rate": camera.AcquisitionFrameRate,
         }
     timeout_streaks = {sn: 0 for sn in serial_map.values()}
+
+    stream_telemetry = StreamTelemetry(recorder.cams, serial_map)
+    stream_telemetry.log_baseline()
 
     if recorder.camera_config["acquisition-type"] == "continuous":
         total_frames = recorder.camera_config["acquisition-settings"]["video_segment_len"]
@@ -60,6 +65,10 @@ def run_capture_loop(recorder, max_frames: int, health=None):
                 recorder.stop_recording.clear()
                 log.info("Stopping recording (user requested)")
                 break
+
+            if stream_telemetry_interval > 0 and frame_idx > 0 and frame_idx % stream_telemetry_interval == 0:
+                for sn in stream_telemetry.serials():
+                    stream_telemetry.log_snapshot(sn, reason="tick", level=logging.INFO)
 
             # for each camera, get current frame and dispatch it
             preview_this_frame = recorder.preview_callback is not None and (frame_idx % 10 == 0)
@@ -85,14 +94,20 @@ def run_capture_loop(recorder, max_frames: int, health=None):
                         timeout_streaks[serial] += 1
                         if timeout_streaks[serial] == 1 or timeout_streaks[serial] % 10 == 0:
                             log.warning("%s: image timeout streak %d (timeout_ms=%d)", serial, timeout_streaks[serial], image_timeout_ms)
+                        if timeout_streaks[serial] == 1:
+                            stream_telemetry.log_snapshot(serial, reason="streak1")
                         if timeout_streaks[serial] >= max_consecutive_timeouts:
+                            stream_telemetry.log_snapshot(serial, reason="watchdog")
                             raise RuntimeError(f"{serial}: exceeded max consecutive image timeouts " f"({max_consecutive_timeouts})") from exc
                         continue
 
                     timeout_streaks[serial] += 1
                     if timeout_streaks[serial] == 1 or timeout_streaks[serial] % 10 == 0:
                         log.warning("%s: failed to get image, streak %d (%s)", serial, timeout_streaks[serial], exc)
+                    if timeout_streaks[serial] == 1:
+                        stream_telemetry.log_snapshot(serial, reason="streak1")
                     if timeout_streaks[serial] >= max_consecutive_timeouts:
+                        stream_telemetry.log_snapshot(serial, reason="watchdog")
                         raise RuntimeError(f"{serial}: exceeded max consecutive errors " f"({max_consecutive_timeouts})") from exc
                     continue
 
