@@ -30,6 +30,7 @@ from multi_camera.acquisition.flir.capture_runner import run_capture_loop as cap
 from multi_camera.acquisition.flir.logging_setup import setup_recording_logger
 from multi_camera.acquisition.flir.pipeline.health import PipelineHealth
 from multi_camera.acquisition.flir.recorder_service import RecorderService
+from multi_camera.acquisition.flir import spinnaker_logging
 
 log = logging.getLogger("flir_pipeline")
 
@@ -86,6 +87,8 @@ class FlirRecorder:
         # use this to ensure both calls with simple pyspin and locally use the same references
         simple_pyspin.list_cameras()
         self.system = simple_pyspin._SYSTEM  # PySpin.System.GetInstance()
+        level = os.environ.get("SPINNAKER_LOG_LEVEL", "WARN")
+        self._spinnaker_log_handler = spinnaker_logging.attach(self.system, level=level)
 
     def get_acquisition_status(self):
         return self.status
@@ -431,6 +434,9 @@ class FlirRecorder:
         if self.iface is not None:
             del self.iface
             self.iface = None
+
+        spinnaker_logging.detach(self.system, getattr(self, "_spinnaker_log_handler", None))
+        self._spinnaker_log_handler = None
 
         simple_pyspin._SYSTEM.ReleaseInstance()
         del simple_pyspin._SYSTEM
