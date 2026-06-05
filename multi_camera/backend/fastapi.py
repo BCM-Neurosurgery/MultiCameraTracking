@@ -8,7 +8,7 @@ from websockets.exceptions import ConnectionClosedOK
 from datetime import date
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from typing import List, Dict, Optional, Callable, Awaitable
+from typing import List, Dict, Optional, Callable, Awaitable, Literal
 from dataclasses import dataclass, field
 import base64
 import numpy as np
@@ -61,6 +61,10 @@ if not acquisition_logger.handlers:
 acquisition_logger.setLevel(logging.INFO)
 
 
+AcquisitionMode = Literal["idle", "preview", "recording", "calibration"]
+SavedAcquisitionMode = Literal["recording", "calibration"]
+
+
 class Session(BaseModel):
     participant_name: str
     session_date: date
@@ -68,11 +72,17 @@ class Session(BaseModel):
     project_id: Optional[str] = None
 
 
+class RecordingState(BaseModel):
+    status: str
+    mode: AcquisitionMode
+
+
 @dataclass
 class GlobalState:
     preview_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     current_session: Session = None
     recording_status: str = ""
+    acquisition_mode: AcquisitionMode = "idle"
     acquisition = None
     event_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -185,8 +195,10 @@ def receive_status(status, progress=None):
     """
     global_state = get_global_state()
     global_state.recording_status = status
+    if status == "Idle":
+        global_state.acquisition_mode = "idle"
 
-    update = {"status": status}
+    update = {"status": status, "mode": global_state.acquisition_mode}
     if progress is not None:
         update["progress"] = progress
     else:
@@ -276,6 +288,7 @@ class NewTrialData(BaseModel):
     recording_filename: str
     comment: str
     max_frames: int
+    acquisition_mode: SavedAcquisitionMode = "recording"
 
 
 class PreviewData(BaseModel):
@@ -369,6 +382,7 @@ async def new_trial(data: NewTrialData):
     recording_path = os.path.join(recording_dir, f"{recording_filename}_{time_str}")
 
     state: GlobalState = get_global_state()
+    state.acquisition_mode = data.acquisition_mode
     current_session = state.current_session
 
     def receive_frames_wrapper(frames):
@@ -410,6 +424,7 @@ async def new_trial(data: NewTrialData):
                 cb_db.close()
         except Exception as e:
             acquisition_logger.error("Recording failed: %s", e)
+            receive_status("Idle")
 
     task.add_done_callback(task_done_callback)
 
@@ -424,12 +439,13 @@ async def preview(data: PreviewData):
     def receive_frames_wrapper(frames):
         schedule_coroutine_threadsafe(receive_frames, frames)
 
-    # run acquisition in a separate thread
-    import threading
-    from functools import partial
-
     state: GlobalState = get_global_state()
-    await run_in_threadpool(state.acquisition.start_acquisition, preview_callback=receive_frames_wrapper, max_frames=max_frames)
+    state.acquisition_mode = "preview"
+    try:
+        await run_in_threadpool(state.acquisition.start_acquisition, preview_callback=receive_frames_wrapper, max_frames=max_frames)
+    except Exception:
+        receive_status("Idle")
+        raise
 
     return {}
 
@@ -641,10 +657,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
     logger.info("Regular websocket exited")
 
 
-@api_router.get("/recording_status", response_model=str)
-async def get_recording_status() -> str:
+@api_router.get("/recording_status", response_model=RecordingState)
+async def get_recording_status() -> RecordingState:
     state: GlobalState = get_global_state()
-    return state.recording_status
+    return RecordingState(status=state.recording_status, mode=state.acquisition_mode)
 
 
 def downsample_image(image, new_width, new_height):

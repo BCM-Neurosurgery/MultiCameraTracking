@@ -1,63 +1,130 @@
 import React from 'react';
 import { useContext, useState } from "react";
-import { Container, Row, Col, Form, Button, ProgressBar } from "react-bootstrap";
+import { Container, Row, Col, Form, Button, ProgressBar, Alert, Badge } from "react-bootstrap";
 import { AcquisitionState } from "../AcquisitionApi";
 import Spinner from 'react-bootstrap/Spinner';
+import { FaBullseye, FaEye, FaStop, FaVideo } from "react-icons/fa";
+
+const modeDisplay = {
+    idle: {
+        title: "READY",
+        message: "No acquisition is running.",
+        alertVariant: "light",
+        badgeVariant: "secondary",
+        formClass: "bg-white",
+        progressLabel: "Acquisition Progress:",
+    },
+    preview: {
+        title: "PREVIEW ONLY - NOT SAVING",
+        message: "Camera frames are being displayed, but no trial video is being saved.",
+        alertVariant: "info",
+        badgeVariant: "info",
+        formClass: "border-info bg-info bg-opacity-10",
+        progressLabel: "Preview Progress:",
+    },
+    recording: {
+        title: "RECORDING - SAVING VIDEO",
+        message: "A trial recording is active and video files are being saved.",
+        alertVariant: "danger",
+        badgeVariant: "danger",
+        formClass: "border-danger bg-danger bg-opacity-10",
+        progressLabel: "Recording Progress:",
+    },
+    calibration: {
+        title: "CALIBRATION - SAVING CALIBRATION VIDEO",
+        message: "Calibration capture is active and calibration video is being saved.",
+        alertVariant: "warning",
+        badgeVariant: "warning",
+        formClass: "border-warning bg-warning bg-opacity-10",
+        progressLabel: "Calibration Progress:",
+    },
+};
 
 const RecordingControl = () => {
-    const { newTrial, recordingFilename, recordingProgress, recordingSystemStatus, calibrationVideo, previewVideo, stopAcquisition } = useContext(AcquisitionState);
+    const {
+        newTrial,
+        recordingFilename,
+        recordingMode,
+        recordingProgress,
+        recordingSystemStatus,
+        calibrationVideo,
+        previewVideo,
+        stopAcquisition,
+    } = useContext(AcquisitionState);
 
     const [comment, setComment] = useState("");
     const [maxFrames, setMaxFrames] = useState(1000);
 
+    const isIdle = recordingSystemStatus === "Idle";
+    const isAcquiring = recordingSystemStatus === "Recording";
+    const activeMode = isIdle ? "idle" : recordingMode || "idle";
+    const display = modeDisplay[activeMode] || modeDisplay.idle;
+    const outputName = activeMode === "preview" ? "Preview only - no file will be saved" : recordingFilename;
+
     return (
         <div >
-
-            {/* Set the form css background-color to green while recordingSystemStatus === "Recording"*/}
-            <style type="text/css">
-                {`
-                .form-recording {
-                    background-color: purple;
-                    color: white; 
-                }`
-                }
-
-            </style>
-
-            {/* Set the form color green while recordingSystemStatus === "Recording"*/}
-            <Form className={recordingSystemStatus === "Recording" ? "g-4 p-2 border bg-warning" : "g-4 p-2 border"}>
+            <Form className={`g-4 p-3 border ${display.formClass}`}>
 
                 <Container>
-                    <Row className="justify-content-md-left">
+                    <Alert variant={display.alertVariant} className="mb-3 d-flex justify-content-between align-items-center">
+                        <div>
+                            <div className="fw-bold">{display.title}</div>
+                            <div>{display.message}</div>
+                        </div>
+                        <Badge bg={display.badgeVariant} text={activeMode === "calibration" ? "dark" : undefined}>
+                            {recordingSystemStatus || "Unknown"}
+                        </Badge>
+                    </Alert>
+
+                    <Row className="g-2 align-items-stretch">
                         <Col md="auto">
-                            <Button id="preview"
-                                className="btn btn-secondary"
-                                disabled={recordingSystemStatus !== "Idle"}
-                                onClick={() => previewVideo(maxFrames)}
-                            >Preview</Button>
-                        </Col>
-                        <Col md="auto">
-                            <Button id="calibration"
-                                className="btn btn-secondary"
-                                disabled={recordingSystemStatus !== "Idle"}
-                                onClick={() => calibrationVideo(maxFrames)}
-                            >Calibration</Button>
-                        </Col>
-                        <Col md="auto">
-                            <Button id="new_trial"
-                                disabled={recordingSystemStatus !== "Idle"}
+                            <Button
+                                id="new_trial"
+                                variant="success"
+                                size="lg"
+                                className="fw-bold"
+                                disabled={!isIdle}
                                 onClick={() => newTrial(comment, maxFrames)}
-                                className="btn btn-primary">New Trial</Button>
+                            >
+                                <FaVideo className="me-2" />
+                                Start Recording
+                            </Button>
                         </Col>
                         <Col md="auto">
-                            <Button id="stop"
-                                className="btn btn-danger float-right"
-                                disabled={recordingSystemStatus === "Idle"}
+                            <Button
+                                id="preview"
+                                variant="outline-secondary"
+                                disabled={!isIdle}
+                                onClick={() => previewVideo(maxFrames)}
+                            >
+                                <FaEye className="me-2" />
+                                Preview Only
+                            </Button>
+                        </Col>
+                        <Col md="auto">
+                            <Button
+                                id="calibration"
+                                variant="outline-warning"
+                                disabled={!isIdle}
+                                onClick={() => calibrationVideo(maxFrames)}
+                            >
+                                <FaBullseye className="me-2" />
+                                Calibration
+                            </Button>
+                        </Col>
+                        <Col md="auto">
+                            <Button
+                                id="stop"
+                                variant="danger"
+                                disabled={!isAcquiring}
                                 onClick={() => stopAcquisition()}
-                            >Stop</Button>
+                            >
+                                <FaStop className="me-2" />
+                                Stop
+                            </Button>
                         </Col>
-                        <Col md="auto">
-                            {recordingSystemStatus === "Recording" ? <Spinner animation="border" role="status" /> : null}
+                        <Col md="auto" className="d-flex align-items-center">
+                            {isAcquiring ? <Spinner animation="border" role="status" /> : null}
                         </Col>
                     </Row>
                 </Container>
@@ -77,15 +144,15 @@ const RecordingControl = () => {
                 </Form.Group>
 
                 <Form.Group as={Row} controlId="file_name" className="p-2">
-                    <Form.Label column sm={3}>File Name:</Form.Label>
+                    <Form.Label column sm={3}>Output:</Form.Label>
                     <Col sm={6}>
-                        <Form.Control type="text" value={recordingFilename} readOnly />
+                        <Form.Control type="text" value={outputName} readOnly />
                     </Col>
                 </Form.Group>
 
                 <Row >
                     <Col sm={3}>
-                        Recording Status:
+                        Acquisition Status:
                     </Col>
                     <Col sm={6} className="text-start">
                         {' '} {recordingSystemStatus}
@@ -95,12 +162,12 @@ const RecordingControl = () => {
 
                 <Row className="p-2">
                     <Col sm={3}>
-                        <Form.Label >Recording Progress:</Form.Label>
+                        <Form.Label >{display.progressLabel}</Form.Label>
                     </Col>
                     <Col>
-                        {/* Only show progress bar if status is recording */}
-                        {recordingSystemStatus !== "Recording" ? null :
+                        {isAcquiring ?
                             <ProgressBar now={recordingProgress} label={`${recordingProgress}%`} />
+                            : null
                         }
                     </Col>
                 </Row>

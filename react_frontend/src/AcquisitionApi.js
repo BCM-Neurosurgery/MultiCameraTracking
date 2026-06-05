@@ -10,11 +10,14 @@ const BASE_URL = `${BASE_HOSTNAME}:8000/api/v1`;
 const API_BASE_URL = `http://${BASE_URL}`;
 const WS_BASE_URL = `ws://${BASE_URL}/ws`;
 
+const fallbackModeForStatus = (status) => status === "Recording" ? "recording" : "idle";
+
 const initialState = {
     partipant: "",
     projectId: "",
     recordingDir: "",
     recordingFilename: "",
+    recordingMode: "idle",
     availableConfigs: [],
     projectOptions: [],
 }
@@ -68,8 +71,8 @@ export const AquisitionApi = (props) => {
     const [recordingDir, setRecordingDir] = useState('');
     const [recordingFileBase, setRecordingFileBase] = useState('');
     const [recordingFilename, setRecordingFilename] = useState('');
+    const [recordingMode, setRecordingMode] = useState('idle');
     const [recordingProgress, setRecordingProgress] = useState('');
-    const [keypoints, setKeypoints] = useState([]);
 
     useEffect(() => {
         // axios.interceptors.request.use(request => {
@@ -99,9 +102,10 @@ export const AquisitionApi = (props) => {
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
             setRecordingSystemStatus(data.status);
+            setRecordingMode(data.mode || fallbackModeForStatus(data.status));
 
             // if there is a progress field, then update the progress bar
-            if (data.progress) {
+            if (data.progress !== undefined && data.progress !== null) {
                 // Compute progress as percentage and take ceiling to nearest integer
                 setRecordingProgress(Math.ceil(data.progress * 100));
             }
@@ -191,7 +195,8 @@ export const AquisitionApi = (props) => {
                     recording_dir: recordingDir,
                     recording_filename: recordingFileBase,
                     comment: comment,
-                    max_frames: max_frames
+                    max_frames: max_frames,
+                    acquisition_mode: "recording"
                 });
 
             const data = response.data;
@@ -209,7 +214,8 @@ export const AquisitionApi = (props) => {
                     recording_dir: recordingDir,
                     recording_filename: "calibration",
                     comment: "calibration",
-                    max_frames: max_frames
+                    max_frames: max_frames,
+                    acquisition_mode: "calibration"
                 });
 
             const data = response.data;
@@ -239,7 +245,13 @@ export const AquisitionApi = (props) => {
     const fetchRecordingStatus = async () => {
         const response = await axios.get(`${API_BASE_URL}/recording_status`);
         console.log("fetchRecordingStatus: ", response.data);
-        setRecordingSystemStatus(response.data);
+        if (typeof response.data === "string") {
+            setRecordingSystemStatus(response.data);
+            setRecordingMode(fallbackModeForStatus(response.data));
+            return;
+        }
+        setRecordingSystemStatus(response.data.status);
+        setRecordingMode(response.data.mode || fallbackModeForStatus(response.data.status));
     };
 
     const fetchProjectIds = async () => {
@@ -469,8 +481,8 @@ export const AquisitionApi = (props) => {
         videoUrl: `ws://${BASE_URL}/video_ws`,
         meshUrl: `ws://${BASE_URL}/mesh_ws`,
         recordingSystemStatus: recordingSystemStatus,
+        recordingMode: recordingMode,
         recordingProgress: recordingProgress,
-        keypoints: keypoints,
         resetCameras,
         newSession,
         newTrial,
