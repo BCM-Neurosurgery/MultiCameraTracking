@@ -1,14 +1,13 @@
+# Shared settings. Use Makefile targets to select the CPU or GPU overlay.
 services:
   mocap:
     build:
       context: .
       dockerfile: ./docker/Dockerfile
-    image: peabody124/mocap
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     tty: true
     stdin_open: true
     environment:
-      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
       REACT_APP_BASE_URL: ${REACT_APP_BASE_URL}
       PYTHONUNBUFFERED: 1
       PROJECT_IDS: ${PROJECT_IDS:-TRBD-53761,AA-56119,PerceptOCD-48392,EMU-18112,TRD-43036,TEST-XXXXX}
@@ -19,10 +18,3 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ${DATAJOINT_EXTERNAL}:/datajoint_external
     network_mode: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]

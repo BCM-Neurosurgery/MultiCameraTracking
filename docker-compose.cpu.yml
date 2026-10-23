@@ -1,0 +1,10 @@
+services:
+  mocap:
+    build:
+      args:
+        BASE_IMAGE: ubuntu:22.04
+        INSTALL_ANALYSIS: "false"
+    image: peabody124/mocap-cpu
+    environment:
+      MOCAP_PROFILE: cpu
+      FORCE_CPU_ENCODE: "1"

@@ -49,7 +49,7 @@ def _build_ffmpeg_cmd(output_path: str, width: int, height: int, fps: float, pix
         # -b:v 0 is required — without it ffmpeg defaults to 2 Mbps which acts as a floor.
         cmd += ["-c:v", "h264_nvenc", "-preset", preset, "-rc", "vbr", "-cq", "24", "-b:v", "0"]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+        cmd += ["-c:v", "libx264", "-preset", preset, "-crf", "18"]
 
     # Force YUV 4:2:0 output.  Without this, ffmpeg's Bayer demosaic produces
     # GBR 4:4:4 (gbrp) which causes green tint in QuickTime / thumbnails and
@@ -120,7 +120,7 @@ def encoder_worker(
     """
     current_base = None
     proc = None
-    encoder_name = f"h264_nvenc {preset}" if use_nvenc else "libx264 veryfast"
+    encoder_name = f"h264_nvenc {preset}" if use_nvenc else f"libx264 {preset}"
     log.info("encoder_worker(%s): started, encoder=%s, %dx%d@%.0ffps", serial, encoder_name, width, height, acquisition_fps)
 
     try:

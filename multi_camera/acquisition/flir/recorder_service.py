@@ -57,26 +57,33 @@ class RecorderService:
         Returns (use_nvenc, preset).  Respects config overrides:
         - ``nvenc_preset: "cpu"`` → force CPU fallback
         - ``nvenc_preset: "p1"``..``"p7"`` → use that preset
-        - ``nvenc_preset: "auto"`` or absent → auto-detect and benchmark
+        - ``nvenc_preset: "auto"`` or absent → auto-detect and benchmark NVENC
+        - ``x264_preset`` → CPU preset (default ``veryfast``); no CPU benchmark
         """
+        acq = (self.recorder.camera_config or {}).get("acquisition-settings", {})
+
+        def cpu_encoder():
+            preset = acq.get("x264_preset", "veryfast")
+            if preset not in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"):
+                raise ValueError("acquisition-settings.x264_preset must be a libx264 speed preset (ultrafast through veryslow)")
+            return False, preset
+
         # Check for env var override first.
         if os.environ.get("FORCE_CPU_ENCODE", "").lower() in ("1", "true", "yes"):
             log.info("FORCE_CPU_ENCODE set — using CPU encoder")
-            return False, "veryfast"
+            return cpu_encoder()
 
         # Check config file override.
-        config_preset = ""
-        if self.recorder.camera_config:
-            config_preset = self.recorder.camera_config.get("acquisition-settings", {}).get("nvenc_preset", "auto")
+        config_preset = acq.get("nvenc_preset", "auto")
 
         if config_preset == "cpu":
             log.info("nvenc_preset=cpu in config — using CPU encoder")
-            return False, "veryfast"
+            return cpu_encoder()
 
         # Check if NVENC is available.
         if not detect_nvenc():
             log.warning("NVENC not available — using CPU encoder (frames may drop with many cameras)")
-            return False, "veryfast"
+            return cpu_encoder()
 
         gpu_info = detect_gpu_info()
         if gpu_info:

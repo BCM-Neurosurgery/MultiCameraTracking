@@ -47,7 +47,18 @@ class StressRecorderShim:
     """Lightweight stand-in for FlirRecorder — provides every attribute that
     RecorderService, encoder_worker, and metadata workers read."""
 
-    def __init__(self, num_cameras: int, fps: float, width: int, height: int, output_dir: str, queue_size: int, segment_frames: int):
+    def __init__(
+        self,
+        num_cameras: int,
+        fps: float,
+        width: int,
+        height: int,
+        output_dir: str,
+        queue_size: int,
+        segment_frames: int,
+        nvenc_preset: str = "auto",
+        x264_preset: str = "veryfast",
+    ):
         self.cams = [
             FakeCamera(DeviceSerialNumber=f"STRESS_{i:02d}", AcquisitionFrameRate=fps, Width=width, Height=height) for i in range(num_cameras)
         ]
@@ -66,7 +77,8 @@ class StressRecorderShim:
                 "video_segment_len": segment_frames if segment_frames > 0 else 0,
                 "frame_rate": fps,
                 "exposure_time": 15000,
-                "nvenc_preset": "auto",
+                "nvenc_preset": nvenc_preset,
+                "x264_preset": x264_preset,
                 "chunk_data": [],
             },
             "meta-info": {"system": "stress-test"},
@@ -350,13 +362,23 @@ def run_stress_test(
     queue_size: int = 150,
     segment_frames: int = 0,
     with_frontend: bool = False,
+    nvenc_preset: str = "auto",
+    x264_preset: str = "veryfast",
 ) -> StressReport:
     """Run a full pipeline stress test with synthetic worst-case frames."""
 
     os.makedirs(output_dir, exist_ok=True)
 
     shim = StressRecorderShim(
-        num_cameras=num_cameras, fps=fps, width=width, height=height, output_dir=output_dir, queue_size=queue_size, segment_frames=segment_frames
+        num_cameras=num_cameras,
+        fps=fps,
+        width=width,
+        height=height,
+        output_dir=output_dir,
+        queue_size=queue_size,
+        segment_frames=segment_frames,
+        nvenc_preset=nvenc_preset,
+        x264_preset=x264_preset,
     )
 
     setup_recording_logger(output_dir=output_dir, session_name="stress_test")

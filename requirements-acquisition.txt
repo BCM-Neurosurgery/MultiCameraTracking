@@ -1,0 +1,13 @@
+simple_pyspin
+Pillow
+numpy<2
+opencv-python
+opencv-contrib-python
+matplotlib
+tqdm
+aniposelib
+pyyaml
+sqlalchemy
+datajoint<2
+fastapi[all]
+colorlog
