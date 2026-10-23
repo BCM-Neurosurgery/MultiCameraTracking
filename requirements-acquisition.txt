@@ -5,7 +5,6 @@ opencv-python
 opencv-contrib-python
 matplotlib
 tqdm
-aniposelib
 pyyaml
 sqlalchemy
 datajoint<2

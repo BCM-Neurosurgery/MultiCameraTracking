@@ -1,4 +1,5 @@
 -r requirements-acquisition.txt
+aniposelib
 jax
 jaxlib
 jaxopt
