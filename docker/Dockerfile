@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1
-FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
+ARG BASE_IMAGE=nvidia/cuda:12.2.2-runtime-ubuntu22.04
+FROM ${BASE_IMAGE}
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 ARG GIT_COMMIT=unknown
 ARG GIT_DESCRIBE=unknown
+ARG INSTALL_ANALYSIS=true
 
 # Create non-root user with matching host UID/GID
 RUN groupadd -g ${HOST_GID} appuser \
@@ -23,7 +25,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     python3 python3-dev python3-pip \
     libusb-1.0-0 libgl1 libglib2.0-0 ffmpeg \
-    curl screen net-tools git \
+    curl screen net-tools git xz-utils \
     ca-certificates gnupg \
     libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -73,17 +75,23 @@ COPY react_frontend/ ./
 
 ### Install EasyMocap (for future 3D reconstruction pipeline)
 WORKDIR /
-RUN git clone https://github.com/peabody124/EasyMocap && \
-    pip3 install --upgrade pip && \
-    pip3 install -e /EasyMocap
+RUN if [ "$INSTALL_ANALYSIS" = "true" ]; then \
+      git clone https://github.com/peabody124/EasyMocap && \
+      pip3 install --upgrade pip && \
+      pip3 install -e /EasyMocap ; \
+    fi
 
 ### Performance libraries
 RUN pip3 install tbb numba
 
 ### MultiCameraTracking
 WORKDIR /Mocap
-COPY requirements.txt ./
-RUN pip3 install -r requirements.txt
+COPY requirements.txt requirements-acquisition.txt ./
+RUN if [ "$INSTALL_ANALYSIS" = "true" ]; then \
+      pip3 install -r requirements.txt ; \
+    else \
+      pip3 install -r requirements-acquisition.txt ; \
+    fi
 COPY pyproject.toml README.md ./
 COPY multi_camera ./multi_camera
 COPY model_data ./model_data

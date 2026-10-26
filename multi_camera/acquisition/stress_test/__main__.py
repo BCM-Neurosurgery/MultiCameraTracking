@@ -44,6 +44,7 @@ def load_config(config_path: str) -> dict:
         "exposure": acq.get("exposure_time", 15000),
         "gamma": acq.get("gamma", None),
         "nvenc_preset": acq.get("nvenc_preset", "auto"),
+        "x264_preset": acq.get("x264_preset", "veryfast"),
         "queue_size": acq.get("image_queue_size", 150),
         "mode": cfg.get("acquisition-type", "continuous"),
         "config_name": os.path.splitext(os.path.basename(config_path))[0],
@@ -59,30 +60,37 @@ def run_preflight(r: Report, cfg: dict, data_volume: str):
     r.header("Phase 1: Preflight")
     n = cfg["num_cameras"]
 
-    # GPU + NVENC
-    gpu = check_gpu()
-    if gpu:
-        r.row("GPU", gpu["name"], PASS)
-        r.row("VRAM", f"{gpu['vram_total_mb']} MB total, {gpu['vram_free_mb']} MB free", PASS)
-        r.row("Driver", gpu["driver"], PASS)
+    # CPU deployments measure encoding capacity in the soak; NVIDIA hardware
+    # checks apply only when GPU encoding was requested.
+    cpu_only = os.environ.get("FORCE_CPU_ENCODE", "").lower() in ("1", "true", "yes") or cfg["nvenc_preset"] == "cpu"
+    gpu = None
+    has_nvenc = False
+    if cpu_only:
+        r.row("Encoder", f"libx264 {cfg['x264_preset']} (CPU)", PASS)
     else:
-        r.row("GPU", "not detected", FAIL)
-        r.issue("No GPU detected — CPU encoding only (slow, may not sustain load)")
-
-    has_nvenc = check_nvenc()
-    if has_nvenc:
-        r.row("NVENC", "h264_nvenc available", PASS)
-    else:
-        r.row("NVENC", "not available", FAIL if gpu else WARN)
+        gpu = check_gpu()
         if gpu:
-            r.issue("GPU present but NVENC failed — check driver/container GPU passthrough")
+            r.row("GPU", gpu["name"], PASS)
+            r.row("VRAM", f"{gpu['vram_total_mb']} MB total, {gpu['vram_free_mb']} MB free", PASS)
+            r.row("Driver", gpu["driver"], PASS)
+        else:
+            r.row("GPU", "not detected", FAIL)
+            r.issue("No GPU detected — CPU encoding only (slow, may not sustain load)")
 
-    if has_nvenc and n > 1:
-        r.log(f"  Testing {n} concurrent NVENC sessions...")
-        all_ok, count = check_nvenc_concurrent(n)
-        r.check("NVENC Sessions", f"{count}/{n} OK", good=all_ok, bad=not all_ok)
-        if not all_ok:
-            r.issue(f"GPU supports only {count} concurrent NVENC sessions, need {n}")
+        has_nvenc = check_nvenc()
+        if has_nvenc:
+            r.row("NVENC", "h264_nvenc available", PASS)
+        else:
+            r.row("NVENC", "not available", FAIL if gpu else WARN)
+            if gpu:
+                r.issue("GPU present but NVENC failed — check driver/container GPU passthrough")
+
+        if has_nvenc and n > 1:
+            r.log(f"  Testing {n} concurrent NVENC sessions...")
+            all_ok, count = check_nvenc_concurrent(n)
+            r.check("NVENC Sessions", f"{count}/{n} OK", good=all_ok, bad=not all_ok)
+            if not all_ok:
+                r.issue(f"GPU supports only {count} concurrent NVENC sessions, need {n}")
 
     # RAM
     ram = check_ram()
@@ -131,6 +139,7 @@ def run_preflight(r: Report, cfg: dict, data_volume: str):
     r.json_data["checks"]["preflight"] = {
         "gpu": gpu,
         "nvenc": has_nvenc,
+        "cpu_only": cpu_only,
         "ram_available_mb": ram["available_mb"],
         "fd_soft": fd["soft"],
         "fs_type": fs_type,
@@ -156,6 +165,8 @@ def run_soak(r: Report, cfg: dict, output_dir: str, test_segment_frames: int, du
         queue_size=cfg["queue_size"],
         segment_frames=test_segment_frames,
         with_frontend=with_frontend,
+        nvenc_preset=cfg["nvenc_preset"],
+        x264_preset=cfg["x264_preset"],
     )
     r.log()
 

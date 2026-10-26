@@ -15,10 +15,13 @@ opencv-contrib-python = "*"
 numpy = "*"
 scipy = "*"
 tqdm = "*"
-jax = "*"
-jaxlib = "*"
-jaxopt = "*"
-jaxlie = "*"
+jax = { version = "*", optional = true }
+jaxlib = { version = "*", optional = true }
+jaxopt = { version = "*", optional = true }
+jaxlie = { version = "*", optional = true }
+
+[tool.poetry.extras]
+analysis = ["jax", "jaxlib", "jaxopt", "jaxlie"]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

@@ -1,0 +1,13 @@
+services:
+  mocap:
+    image: peabody124/mocap
+    environment:
+      MOCAP_PROFILE: gpu
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
