@@ -554,6 +554,14 @@ def _log_system_banner(recorder, config_name: str):
     mode = cfg.get("acquisition-type", "continuous")
     segment = acq.get("video_segment_len", "—")
     preset = acq.get("nvenc_preset", "auto")
+    # Encoder detection runs when recording starts. Report the configured policy
+    # here without probing hardware or triggering a benchmark.
+    if os.environ.get("FORCE_CPU_ENCODE", "").lower() in ("1", "true", "yes") or preset == "cpu":
+        encoder = f"CPU / libx264 / {acq.get('x264_preset', 'veryfast')}"
+    elif not preset or preset == "auto":
+        encoder = "Auto (selected at recording start)"
+    else:
+        encoder = f"NVENC {preset} requested (CPU fallback)"
 
     w = 55
     lines = [
@@ -568,7 +576,7 @@ def _log_system_banner(recorder, config_name: str):
         f"  Gamma        {gamma if gamma is not None else 'disabled'}",
         f"  Mode         {mode} (segment: {segment} frames)",
         f"  Config       {config_name}",
-        f"  NVENC Preset {preset}",
+        f"  Encoder      {encoder}",
         "═" * w,
         "",
     ]
