@@ -30,12 +30,14 @@ RUN apt-get update && apt-get install -y \
     libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-### FFmpeg with NVENC support (BtbN static build — includes libx264, h264_nvenc, hevc_nvenc)
-### This replaces the old volume-mount hack with a reproducible build step
-RUN curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
-    | tar -xJ --strip-components=2 -C /usr/local/bin/ \
-      ffmpeg-master-latest-linux64-gpl/bin/ffmpeg \
-      ffmpeg-master-latest-linux64-gpl/bin/ffprobe
+### FFmpeg with NVENC support (pinned for the deployed 580-series NVIDIA drivers)
+RUN curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-05-31-13-22/ffmpeg-N-124714-g49a77d37be-linux64-gpl.tar.xz \
+      -o /tmp/ffmpeg.tar.xz \
+ && echo "ee052121296e6479325e09c6097d48e72a4af472d18c2b94388b5405dcde6cce  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
+ && tar -xJ --strip-components=2 -C /usr/local/bin/ -f /tmp/ffmpeg.tar.xz \
+      ffmpeg-N-124714-g49a77d37be-linux64-gpl/bin/ffmpeg \
+      ffmpeg-N-124714-g49a77d37be-linux64-gpl/bin/ffprobe \
+ && rm /tmp/ffmpeg.tar.xz
 
 ### Install Spinnaker SDK 4.3 (Ubuntu 22.04, Python 3.10)
 COPY docker/flir/spinnaker-4.3.0.189-amd64 /tmp/spinnaker-sdk
